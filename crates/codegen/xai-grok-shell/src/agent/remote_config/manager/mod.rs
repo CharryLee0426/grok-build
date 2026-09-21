@@ -886,6 +886,55 @@ impl ModelsManager {
         self.spawn_catalog_retry(remote_fetch_enabled);
     }
 
+    /// OpenRouter publishes new models independently of xAI catalog etags.
+    /// A weak reference lets this timer stop after the agent is dropped.
+    pub(crate) fn start_provider_refresh_watcher(&self) {
+        let weak = Arc::downgrade(&self.inner);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(xai_grok_models::openrouter::CACHE_TTL).await;
+                let Some(inner) = weak.upgrade() else {
+                    break;
+                };
+                let manager = Self { inner };
+                manager.refresh_provider_catalog().await;
+            }
+        });
+    }
+
+    /// A persistent leader may outlive an external provider login/logout.
+    /// Rebuild from current credentials when a client connects or lists models.
+    pub(crate) async fn refresh_provider_catalog(&self) {
+        let cfg = self.inner.cfg.read().clone();
+        crate::agent::builtin_providers::warm_catalog(&cfg).await;
+        let cfg = self.inner.cfg.read().clone();
+        if self.inner.user_selected_model.load(Ordering::Relaxed) {
+            self.apply_config(cfg);
+        } else {
+            self.apply_config_reselecting_default(cfg);
+        }
+    }
+
+    /// Explicit provider-prefixed IDs can be used before the public catalog
+    /// catches up, or while offline. They still pass the normal model filters.
+    pub(crate) fn register_provider_model(&self, id: &str) {
+        if self.inner.catalog.read().models.contains_key(id) {
+            return;
+        }
+        let Some((provider, slug)) = id.split_once('/') else {
+            return;
+        };
+        if slug.is_empty()
+            || slug.chars().any(char::is_whitespace)
+            || crate::agent::builtin_providers::provider_from_id(provider).is_none()
+        {
+            return;
+        }
+        let mut cfg = self.inner.cfg.read().clone();
+        cfg.config_models.entry(id.to_owned()).or_default();
+        self.apply_config(cfg);
+    }
+
     /// Refresh the model catalog on every auth token refresh.
     pub fn start_auth_refresh_watcher(&self, notify: Arc<tokio::sync::Notify>) {
         let mgr = self.clone();

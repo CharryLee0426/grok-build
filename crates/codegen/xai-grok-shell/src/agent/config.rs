@@ -2003,6 +2003,7 @@ impl Config {
             }
             if let Some(ref id) = model.model_provider
                 && !config.model_providers.contains_key(id)
+                && super::builtin_providers::provider_from_id(id).is_none()
                 && !declared_model_provider_names.contains(id.as_str())
             {
                 config.config_warnings.push(
@@ -3343,6 +3344,7 @@ pub(crate) fn resolve_model_list(
         }
         resolved = prefetched;
     }
+    super::builtin_providers::extend_catalog(cfg, &mut resolved);
     let mut explicit_api_backend_keys = std::collections::HashSet::new();
     for (key, model_override) in &cfg.config_models {
         let had_base = resolved.contains_key(key);
@@ -3359,8 +3361,10 @@ pub(crate) fn resolve_model_list(
             }
         }
         let with_provider = model_override.model_provider.as_deref().map(|pid| {
-            match cfg.model_providers.get(pid) {
-                Some(provider) => model_override.with_provider_defaults(provider, pid),
+            match super::builtin_providers::resolved_provider_defaults(cfg, pid)
+                .or_else(|| cfg.model_providers.get(pid).cloned())
+            {
+                Some(provider) => model_override.with_provider_defaults(&provider, pid),
                 None => model_override.with_missing_provider(),
             }
         });
@@ -3369,6 +3373,17 @@ pub(crate) fn resolve_model_list(
             explicit_api_backend_keys.insert(key.as_str());
         }
         let mut entry = effective.apply(key, base, &cfg.endpoints);
+        if let Some(provider) = model_override
+            .model_provider
+            .as_deref()
+            .and_then(super::builtin_providers::provider_from_id)
+            .or_else(|| {
+                key.split_once('/')
+                    .and_then(|(id, _)| super::builtin_providers::provider_from_id(id))
+            })
+        {
+            super::builtin_providers::attach_auth(&mut entry, provider);
+        }
         let session_bearer_unsafe = !crate::util::is_xai_api_bearer_url(&entry.info.base_url)
             || entry
                 .api_base_url
@@ -3395,6 +3410,13 @@ pub(crate) fn resolve_model_list(
         resolved.insert(key.clone(), entry);
     }
     for (key, entry) in resolved.iter_mut() {
+        if let Some(provider) = entry
+            .auth_provider
+            .as_ref()
+            .and_then(|p| p.builtin_provider())
+        {
+            super::builtin_providers::attach_auth(entry, provider);
+        }
         if let Some(ref mut provider) = entry.auth_provider {
             if provider.is_fail_closed() {
                 continue;
@@ -4737,6 +4759,25 @@ pub(crate) fn try_resolve_model_credentials(
     model_id: &str,
     session_key: Option<&str>,
 ) -> Option<ResolvedCredentials> {
+    try_resolve_model_credentials_inner(model_id, None, session_key)
+}
+
+/// Resolve a wire slug only within the active destination. Different providers
+/// commonly expose the same slug, so a slug alone cannot authorize a new bearer.
+pub(crate) fn try_resolve_model_credentials_for_route(
+    model_id: &str,
+    base_url: &str,
+    api_backend: ApiBackend,
+    session_key: Option<&str>,
+) -> Option<ResolvedCredentials> {
+    try_resolve_model_credentials_inner(model_id, Some((base_url, api_backend)), session_key)
+}
+
+fn try_resolve_model_credentials_inner(
+    model_id: &str,
+    route: Option<(&str, ApiBackend)>,
+    session_key: Option<&str>,
+) -> Option<ResolvedCredentials> {
     let raw = crate::config::load_effective_config()
         .map_err(|e| tracing::warn!(error = %e, "config load failed for credential resolution"))
         .ok()?;
@@ -4744,14 +4785,46 @@ pub(crate) fn try_resolve_model_credentials(
         .map_err(|e| tracing::warn!(error = %e, "config parse failed for credential resolution"))
         .ok()?;
     let models = resolve_model_list(&cfg, None);
-    let entry = find_model_by_id(&models, model_id)?;
+    let entry = match &route {
+        Some((base_url, api_backend)) => {
+            find_model_by_route(&models, model_id, base_url, api_backend.clone())?
+        }
+        None => find_model_by_id(&models, model_id)?,
+    };
     let mut credentials = resolve_credentials(entry, session_key);
+    if let Some((base_url, _)) = route
+        && credentials.base_url.trim_end_matches('/') != base_url.trim_end_matches('/')
+    {
+        return None;
+    }
     enforce_disable_api_key_auth(
         &mut credentials,
         cfg.grok_com_config.api_key_auth_disabled(),
         session_key,
     );
     Some(credentials)
+}
+
+pub(crate) fn find_model_by_route<'a>(
+    models: &'a IndexMap<String, ModelEntry>,
+    model_id: &str,
+    base_url: &str,
+    api_backend: ApiBackend,
+) -> Option<&'a ModelEntry> {
+    let matches_route = |entry: &&ModelEntry| {
+        entry.info.api_backend == api_backend
+            && (entry.info.base_url.trim_end_matches('/') == base_url.trim_end_matches('/')
+                || entry
+                    .api_base_url
+                    .as_deref()
+                    .is_some_and(|url| url.trim_end_matches('/') == base_url.trim_end_matches('/')))
+    };
+    models.get(model_id).filter(matches_route).or_else(|| {
+        models
+            .values()
+            .filter(matches_route)
+            .find(|entry| entry.info.has_model_id(model_id))
+    })
 }
 /// Per-model auth facts (BYOK status and auth scheme) from one effective-config load, memoized by the session actor.
 #[derive(Clone, Copy)]
@@ -5007,6 +5080,20 @@ pub(crate) fn sampling_config_for_model(
     let temperature = info.temperature;
     let top_p = info.top_p;
     let mut extra_headers = info.extra_headers.clone();
+    if info.api_backend == ApiBackend::OpenAiCodex
+        && model
+            .effective_auth_provider()
+            .and_then(|p| p.builtin_provider())
+            == Some(xai_grok_login::provider_auth::ModelProvider::OpenAiCodex)
+        && credentials.base_url.trim_end_matches('/') == super::builtin_providers::CODEX_BASE_URL
+        && let Ok(Some(credential)) = xai_grok_login::provider_auth::read_provider_credential(
+            &xai_grok_config::grok_home(),
+            xai_grok_login::provider_auth::ModelProvider::OpenAiCodex,
+        )
+        && let Some(account_id) = credential.account_id()
+    {
+        extra_headers.insert("chatgpt-account-id".into(), account_id.to_owned());
+    }
     inject_url_derived_headers(
         &mut extra_headers,
         alpha_test_key.as_deref(),
@@ -5052,6 +5139,14 @@ pub(crate) fn sampling_config_for_model(
         attribution_callback: None,
         bearer_resolver: None,
         supports_backend_search: info.supports_backend_search,
+        supports_tools: (info.api_backend == ApiBackend::OpenRouter)
+            .then(|| {
+                super::builtin_providers::cached_models()
+                    .iter()
+                    .find(|model| model.id == info.model)
+                    .map(|model| model.supports_tools())
+            })
+            .flatten(),
         compactions_remaining: info.compactions_remaining,
         compaction_at_tokens: info.compaction_at_tokens,
         doom_loop_recovery: None,

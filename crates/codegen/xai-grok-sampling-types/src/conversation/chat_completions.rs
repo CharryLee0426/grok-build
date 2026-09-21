@@ -112,6 +112,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
                 tool_call_id: None,
                 model_id: None,
                 reasoning_content: None,
+                reasoning_details: Vec::new(),
             }
         }
         ConversationItem::Assistant(a) => {
@@ -133,6 +134,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
                 tool_call_id: None,
                 model_id: a.model_id,
                 reasoning_content: None,
+                reasoning_details: Vec::new(),
             }
         }
         ConversationItem::ToolResult(t) => {
@@ -159,6 +161,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
                     tool_call_id: Some(t.tool_call_id),
                     model_id: None,
                     reasoning_content: None,
+                    reasoning_details: Vec::new(),
                 }
             }
         }
@@ -172,6 +175,7 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
             tool_call_id: None,
             model_id: None,
             reasoning_content: None,
+            reasoning_details: Vec::new(),
         },
         // The only caller folds `Reasoning` into the following assistant.
         ConversationItem::Reasoning(_) => unreachable!(
@@ -186,10 +190,14 @@ pub fn conversation_item_to_chat_message(item: ConversationItem) -> ChatRequestM
 pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRequestMessage> {
     let mut out: Vec<ChatRequestMessage> = Vec::with_capacity(items.len());
     let mut pending_reasoning: Vec<String> = Vec::new();
+    let mut pending_details = Vec::new();
 
     for item in items {
         match item {
             ConversationItem::Reasoning(r) => {
+                if let Some(details) = openrouter_reasoning_details(&r) {
+                    pending_details.extend(details);
+                }
                 let text = reasoning_item_text(&r);
                 if !text.is_empty() {
                     pending_reasoning.push(text);
@@ -197,6 +205,7 @@ pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRe
             }
             ConversationItem::Assistant(_) => {
                 let mut msg = conversation_item_to_chat_message(item);
+                msg.reasoning_details = std::mem::take(&mut pending_details);
                 if !pending_reasoning.is_empty() {
                     msg.reasoning_content = Some(pending_reasoning.join("\n"));
                     pending_reasoning.clear();
@@ -209,6 +218,7 @@ pub fn conversation_to_chat_messages(items: Vec<ConversationItem>) -> Vec<ChatRe
             }
             other => {
                 pending_reasoning.clear();
+                pending_details.clear();
                 out.push(conversation_item_to_chat_message(other));
             }
         }

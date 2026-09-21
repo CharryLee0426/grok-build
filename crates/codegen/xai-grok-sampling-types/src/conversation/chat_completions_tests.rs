@@ -11,6 +11,28 @@ fn make_test_tool() -> ToolSpec {
 }
 
 #[test]
+fn openrouter_reasoning_survives_persistence_but_is_not_sent_as_openai_ciphertext() {
+    let details =
+        vec![serde_json::json!({"type":"reasoning.encrypted","data":"opaque","id":"signed-block"})];
+    let items = vec![
+        ConversationItem::Reasoning(openrouter_reasoning_item("Summary".into(), details.clone())),
+        ConversationItem::assistant("Answer"),
+    ];
+    let persisted = serde_json::to_value(items).unwrap();
+    let items = serde_json::from_value::<Vec<ConversationItem>>(persisted).unwrap();
+    let messages = conversation_to_chat_messages(items.clone());
+    assert_eq!(messages.first().unwrap().reasoning_details, details);
+    assert_eq!(
+        messages.first().unwrap().reasoning_content.as_deref(),
+        Some("Summary")
+    );
+    let responses: rs::CreateResponse = (&ConversationRequest::from_items(items)).into();
+    let body = serde_json::to_value(responses).unwrap();
+    assert!(!body.to_string().contains("opaque"));
+    assert!(!body.to_string().contains(OPENROUTER_REASONING_ID));
+}
+
+#[test]
 fn test_conversation_item_roundtrip() {
     let system = ConversationItem::system("You are a helpful assistant.");
     let chat_msg = conversation_item_to_chat_message(system.clone());
@@ -83,6 +105,7 @@ fn test_chat_response_message_to_conversation_item() {
         role: Role::Assistant,
         content: Some("Hello, world!".to_string()),
         reasoning_content: None,
+        reasoning_details: Vec::new(),
         tool_calls: vec![],
         tool_call_id: None,
         citations: None,
@@ -97,6 +120,7 @@ fn test_chat_response_message_to_conversation_item() {
         role: Role::Assistant,
         content: Some("The answer is 42.".to_string()),
         reasoning_content: Some("Let me think step by step...".to_string()),
+        reasoning_details: Vec::new(),
         tool_calls: vec![],
         tool_call_id: None,
         citations: None,
@@ -114,6 +138,7 @@ fn test_chat_response_message_to_conversation_item() {
         role: Role::Assistant,
         content: None,
         reasoning_content: None,
+        reasoning_details: Vec::new(),
         tool_calls: vec![ToolCallResponse {
             id: "call_123".to_string(),
             kind: "function".to_string(),

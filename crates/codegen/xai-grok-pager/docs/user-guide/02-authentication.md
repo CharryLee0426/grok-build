@@ -2,6 +2,42 @@
 
 Grok supports several authentication methods, including interactive browser login, enterprise single sign-on (SSO), and headless CI/CD runners.
 
+## OpenRouter and OpenAI Codex
+
+Sign in to OpenRouter in your browser:
+
+```bash
+grok login openrouter
+grok models
+grok --model openrouter/anthropic/claude-sonnet-4.6
+```
+
+Alternatively, set `OPENROUTER_API_KEY`, or save a key from stdin:
+
+```bash
+printenv OPENROUTER_API_KEY | grok login openrouter --with-api-key
+```
+
+An environment key takes precedence over the saved OpenRouter credential. OpenRouter's OAuth PKCE flow exchanges browser authorization for a provider API key; it uses the same inference path as an API key supplied directly.
+
+For a ChatGPT subscription, sign in to Codex:
+
+```bash
+grok login openai-codex
+grok --model openai-codex/gpt-6-astra
+```
+
+The browser callback runs on loopback (`localhost:1455` for Codex; a free local port for OpenRouter). The command also prints the login URL. Codex access tokens refresh automatically before use; subscription model access and limits depend on your account. This uses the Codex subscription endpoint, not OpenAI Platform API billing.
+
+Provider credentials are kept separately from Grok login in `~/.grok/provider-auth/` (under `$GROK_HOME` when set), with atomic writes and owner-only file permissions on Unix. To remove saved credentials:
+
+```bash
+grok logout openrouter
+grok logout openai-codex
+```
+
+Unset `OPENROUTER_API_KEY` as well if you want to stop using an environment key. Plain `grok logout` signs out of Grok only. See [custom models](11-custom-models.md#openrouter-model-discovery) for catalog refresh and provider configuration.
+
 ---
 
 ## Browser Login (Default)

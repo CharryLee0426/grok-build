@@ -209,6 +209,9 @@ fn conversation_item_to_input_items(item: &ConversationItem) -> Vec<rs::InputIte
             })]
         }
         ConversationItem::Reasoning(r) => {
+            if openrouter_reasoning_details(r).is_some() {
+                return Vec::new();
+            }
             // `status` is output-only and rejected on input.
             let mut r = r.clone();
             r.status = None;

@@ -350,6 +350,7 @@ struct ClientDefaults {
     reasoning_summary: Option<xai_grok_sampling_types::ReasoningSummary>,
     extra_response_includes: Vec<String>,
     doom_loop_recovery: Option<xai_grok_sampling_types::DoomLoopRecoveryPolicy>,
+    supports_tools: Option<bool>,
 }
 
 /// Endpoint URL builder, resolved once at client construction so each request only appends its path.
@@ -540,6 +541,17 @@ impl SamplingClient {
             }
         }
 
+        if config.api_backend == ApiBackend::OpenAiCodex {
+            headers.insert(
+                HeaderName::from_static("openai-beta"),
+                HeaderValue::from_static("responses=experimental"),
+            );
+            headers.insert(
+                HeaderName::from_static("originator"),
+                HeaderValue::from_static("grok-build"),
+            );
+        }
+
         // Apply all extra headers verbatim
         // This is the single injection point for proxy-auth headers and any other URL- or environment-specific headers the session decides to set
         for (key, value) in &config.extra_headers {
@@ -657,9 +669,15 @@ impl SamplingClient {
             reasoning_summary: config.reasoning_summary,
             extra_response_includes: config.extra_response_includes,
             doom_loop_recovery: config.doom_loop_recovery,
+            supports_tools: config.supports_tools,
         };
 
-        let endpoint = EndpointTemplate::new(&config.base_url, &config.query_params);
+        let endpoint_base = if defaults.api_backend == ApiBackend::OpenAiCodex {
+            crate::provider_compat::codex_base_url(&config.base_url)
+        } else {
+            config.base_url.clone()
+        };
+        let endpoint = EndpointTemplate::new(&endpoint_base, &config.query_params);
 
         Ok(Self {
             http,
@@ -713,6 +731,19 @@ impl SamplingClient {
                     }
                 }
             }
+        }
+        // Resolve routing from the bearer actually sent, so re-login into a
+        // different account cannot retain a construction-time account header.
+        // Opaque bearers keep an explicitly configured account as a fallback.
+        if self.defaults.api_backend == ApiBackend::OpenAiCodex
+            && let Some(account_id) = headers
+                .get(AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .and_then(crate::provider_compat::codex_account_id)
+            && let Ok(value) = HeaderValue::from_str(&account_id)
+        {
+            headers.insert(HeaderName::from_static("chatgpt-account-id"), value);
         }
         {
             let auth_prefix = headers
@@ -848,6 +879,11 @@ impl SamplingClient {
     }
 
     fn apply_defaults(&self, mut request: ChatCompletionRequest) -> Result<ChatCompletionRequest> {
+        if self.defaults.api_backend != ApiBackend::OpenRouter {
+            for message in &mut request.messages {
+                message.reasoning_details.clear();
+            }
+        }
         if request.model.is_none() {
             request.model = Some(self.defaults.model.clone());
         }
@@ -956,9 +992,18 @@ impl SamplingClient {
             builder,
             sent_bearer,
         } = self.post(self.endpoint("chat/completions"));
-        let built_request = self
-            .build_json_request(grok_headers.apply(builder), &payload)
-            .await?;
+        let built_request = if self.defaults.api_backend == ApiBackend::OpenRouter {
+            let mut body = serde_json::to_value(&payload).map_err(SamplingError::Serialization)?;
+            crate::provider_compat::prepare_openrouter_request(
+                &mut body,
+                self.defaults.supports_tools,
+            );
+            self.build_json_request(grok_headers.apply(builder), &body)
+                .await?
+        } else {
+            self.build_json_request(grok_headers.apply(builder), &payload)
+                .await?
+        };
         let response = self.send(built_request).await?;
 
         let status = response.status();
@@ -1097,9 +1142,18 @@ impl SamplingClient {
         let http_request = grok_headers
             .apply(builder)
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
-        let built_request = self
-            .build_json_request(http_request, &streaming_request)
-            .await?;
+        let built_request = if self.defaults.api_backend == ApiBackend::OpenRouter {
+            let mut body =
+                serde_json::to_value(&streaming_request).map_err(SamplingError::Serialization)?;
+            crate::provider_compat::prepare_openrouter_request(
+                &mut body,
+                self.defaults.supports_tools,
+            );
+            self.build_json_request(http_request, &body).await?
+        } else {
+            self.build_json_request(http_request, &streaming_request)
+                .await?
+        };
 
         tracing::debug!(
             url = %built_request.url(),
@@ -1278,6 +1332,31 @@ impl SamplingClient {
         &self,
         mut request: CreateResponseWrapper,
     ) -> Result<rs::Response> {
+        if self.defaults.api_backend == ApiBackend::OpenAiCodex {
+            let (mut stream, _, _) = self.create_response_stream(request).await?;
+            while let Some(event) = stream.next().await {
+                match event? {
+                    rs::ResponseStreamEvent::ResponseCompleted(event) => return Ok(event.response),
+                    rs::ResponseStreamEvent::ResponseIncomplete(event) => return Ok(event.response),
+                    rs::ResponseStreamEvent::ResponseFailed(event) => {
+                        return Err(SamplingError::EventStreamError(
+                            event
+                                .response
+                                .error
+                                .map(|error| error.message)
+                                .unwrap_or_else(|| "Codex response failed".into()),
+                        ));
+                    }
+                    rs::ResponseStreamEvent::ResponseError(event) => {
+                        return Err(SamplingError::EventStreamError(event.message));
+                    }
+                    _ => {}
+                }
+            }
+            return Err(SamplingError::EventStreamError(
+                "Codex stream ended before a terminal response".into(),
+            ));
+        }
         self.apply_response_defaults(&mut request)?;
 
         let x_grok_conv_id = request.x_grok_conv_id.as_deref().unwrap_or_default();
@@ -1465,6 +1544,9 @@ impl SamplingClient {
         append_response_includes(&mut request_body, &self.defaults.extra_response_includes);
         xai_grok_sampling_types::patch_reasoning_text_types(&mut request_body);
         // Fresh per attempt so signals never leak across retries; `None` (check disabled) sends no header and does no peek work per event
+        if self.defaults.api_backend == ApiBackend::OpenAiCodex {
+            crate::provider_compat::prepare_codex_request(&mut request_body);
+        }
         let doom_loop = self
             .defaults
             .doom_loop_recovery
@@ -1477,6 +1559,11 @@ impl SamplingClient {
         let mut http_request = grok_headers
             .apply(builder)
             .header(ACCEPT, HeaderValue::from_static("text/event-stream"));
+        if self.defaults.api_backend == ApiBackend::OpenAiCodex && !x_grok_conv_id.is_empty() {
+            http_request = http_request
+                .header("session-id", x_grok_conv_id)
+                .header("x-client-request-id", x_grok_req_id);
+        }
         if let Some(policy) = self.defaults.doom_loop_recovery {
             http_request = http_request
                 .header(DOOM_LOOP_CHECK_HEADER, policy.window_tokens.to_string())
@@ -1560,6 +1647,8 @@ impl SamplingClient {
         let event_stream = byte_stream.eventsource();
 
         let doom_loop_for_stream = doom_loop.clone();
+        let is_codex = self.defaults.api_backend == ApiBackend::OpenAiCodex;
+        let mut codex_decoder = crate::provider_compat::CodexEventDecoder::default();
 
         // The scan item is an `Option`: `Some(None)` skips an absorbed doom-loop event without terminating the stream (`filter_map` below)
         // An outer `None` still ends the stream
@@ -1593,6 +1682,12 @@ impl SamplingClient {
                             Some(None)
                         } else if let Some(stream_error) = try_parse_stream_error(data) {
                             Some(Some(Err(stream_error)))
+                        } else if is_codex {
+                            match codex_decoder.decode(data) {
+                                Ok(Some(event)) => Some(Some(Ok(event))),
+                                Ok(None) => Some(None),
+                                Err(error) => Some(Some(Err(error))),
+                            }
                         } else {
                             Some(Some(deserialize_response_event(data)))
                         }
@@ -1606,6 +1701,25 @@ impl SamplingClient {
             })
             .filter_map(std::future::ready)
             .boxed();
+
+        let events = if is_codex {
+            async_stream::stream! {
+                let mut inner = events;
+                while let Some(event) = inner.next().await {
+                    let terminal = matches!(&event, Ok(rs::ResponseStreamEvent::ResponseCompleted(_)
+                        | rs::ResponseStreamEvent::ResponseIncomplete(_)
+                        | rs::ResponseStreamEvent::ResponseFailed(_)
+                        | rs::ResponseStreamEvent::ResponseError(_))) || event.is_err();
+                    yield event;
+                    // Do not poll the upstream body again: it may stay open
+                    // after its terminal event, including in auxiliary calls.
+                    if terminal { break; }
+                }
+            }
+            .boxed()
+        } else {
+            events
+        };
 
         Ok((
             span_timing.hold_until_first_content(events, responses_event_class),
@@ -2166,13 +2280,13 @@ impl SamplingClient {
         let request_id = crate::types::RequestId::random();
         let length_policy = request.length_policy;
         let result = match self.api_backend() {
-            ApiBackend::ChatCompletions => {
+            ApiBackend::ChatCompletions | ApiBackend::OpenRouter => {
                 let (raw, meta) = self.conversation_stream(request).await?;
                 let events =
                     crate::stream::stream_chat_completions(raw, meta, request_id, idle_timeout);
                 crate::stream::collect_response(events).await
             }
-            ApiBackend::Responses => {
+            ApiBackend::Responses | ApiBackend::OpenAiCodex => {
                 let (raw, meta, doom_loop) = self.conversation_stream_responses(request).await?;
                 let events =
                     crate::stream::stream_responses(raw, meta, request_id, idle_timeout, doom_loop);
@@ -2526,8 +2640,10 @@ mod tests {
 
         let (content_type, reply) = match (streaming, &backend) {
             (true, _) => ("text/event-stream", "data: [DONE]\n\n"),
-            (false, ApiBackend::Responses) => ("application/json", EMPTY_RESPONSE_JSON),
-            (false, ApiBackend::ChatCompletions) => {
+            (false, ApiBackend::Responses | ApiBackend::OpenAiCodex) => {
+                ("application/json", EMPTY_RESPONSE_JSON)
+            }
+            (false, ApiBackend::ChatCompletions | ApiBackend::OpenRouter) => {
                 ("application/json", EMPTY_CHAT_COMPLETION_JSON)
             }
             (false, ApiBackend::Messages) => ("application/json", EMPTY_MESSAGE_JSON),
@@ -2570,14 +2686,16 @@ mod tests {
             ..Default::default()
         };
         let sent = match (streaming, &backend) {
-            (false, ApiBackend::ChatCompletions) => client.conversation(request).await.map(drop),
-            (true, ApiBackend::ChatCompletions) => {
+            (false, ApiBackend::ChatCompletions | ApiBackend::OpenRouter) => {
+                client.conversation(request).await.map(drop)
+            }
+            (true, ApiBackend::ChatCompletions | ApiBackend::OpenRouter) => {
                 client.conversation_stream(request).await.map(drop)
             }
-            (false, ApiBackend::Responses) => {
+            (false, ApiBackend::Responses | ApiBackend::OpenAiCodex) => {
                 client.conversation_responses(request).await.map(drop)
             }
-            (true, ApiBackend::Responses) => client
+            (true, ApiBackend::Responses | ApiBackend::OpenAiCodex) => client
                 .conversation_stream_responses(request)
                 .await
                 .map(drop),
@@ -3057,6 +3175,78 @@ mod tests {
         assert_eq!(
             bearer.as_deref().map(str::len),
             Some(crate::attribution::BEARER_SUFFIX_LEN),
+        );
+    }
+
+    #[test]
+    fn codex_derives_account_header_from_the_live_bearer() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        #[derive(Debug)]
+        struct Resolver(std::sync::Mutex<String>);
+        impl crate::config::BearerResolver for Resolver {
+            fn current_bearer(&self) -> Option<String> {
+                Some(self.0.lock().unwrap().clone())
+            }
+        }
+        let resolver = Arc::new(Resolver(std::sync::Mutex::new(String::new())));
+        let client = SamplingClient::new(SamplerConfig {
+            api_backend: ApiBackend::OpenAiCodex,
+            api_key: Some("stale-token".into()),
+            extra_headers: IndexMap::from([(
+                "chatgpt-account-id".into(),
+                "initial-account".into(),
+            )]),
+            bearer_resolver: Some(resolver.clone()),
+            ..minimal_config()
+        })
+        .unwrap();
+
+        for account in ["account-a", "account-b"] {
+            let claims =
+                serde_json::json!({"https://api.openai.com/auth":{"chatgpt_account_id":account}});
+            let token = format!(
+                "header.{}.signature",
+                URL_SAFE_NO_PAD.encode(claims.to_string())
+            );
+            *resolver.0.lock().unwrap() = token.clone();
+            let request = client
+                .post("https://example.test/codex/responses")
+                .builder
+                .build()
+                .unwrap();
+            assert_eq!(
+                request.headers().get("chatgpt-account-id").unwrap(),
+                account
+            );
+            assert_eq!(
+                request
+                    .headers()
+                    .get(AUTHORIZATION)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+                format!("Bearer {token}")
+            );
+        }
+
+        *resolver.0.lock().unwrap() = "opaque-bearer".into();
+        let request = client
+            .post("https://example.test/codex/responses")
+            .builder
+            .build()
+            .unwrap();
+        assert_eq!(
+            request.headers().get("chatgpt-account-id").unwrap(),
+            "initial-account"
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(AUTHORIZATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Bearer opaque-bearer"
         );
     }
 

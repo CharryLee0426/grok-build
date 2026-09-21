@@ -12,7 +12,7 @@ pub async fn list_available_models(agent_config: &AgentConfig) -> Result<()> {
         AuthStatus::ApiKey => println!("You are using XAI_API_KEY."),
         AuthStatus::LoggedIn(host) => println!("You are logged in with {}.", host),
         AuthStatus::ModelCredentials(model) => {
-            println!("Model '{model}' is using its own API key.");
+            println!("Model '{model}' is using provider credentials.");
         }
         AuthStatus::DeploymentKey => println!("You are authenticated via deployment key."),
         AuthStatus::NotAuthenticated => println!("You are not authenticated."),

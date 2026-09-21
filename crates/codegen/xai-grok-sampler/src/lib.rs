@@ -22,6 +22,7 @@ pub mod events;
 pub mod handle;
 pub mod metrics;
 mod prewarm;
+mod provider_compat;
 mod request_compression;
 pub mod retry;
 pub mod sampling_log;

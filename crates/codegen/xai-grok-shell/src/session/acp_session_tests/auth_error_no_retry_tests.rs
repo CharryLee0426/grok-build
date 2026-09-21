@@ -1615,6 +1615,129 @@ async fn seed_provider_memo(actor: &Arc<SessionActor>, provider: xai_grok_login:
         }));
 }
 
+/// A duplicate wire slug can revive a native provider ref for a custom model.
+/// Neither pre-turn refresh nor 401 recovery may move that native bearer onto
+/// a different route, even when the memo claims the model uses native auth.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn native_provider_refresh_and_401_reject_mismatched_sampler_routes() {
+    use xai_grok_login::provider_auth::ModelProvider;
+    use xai_grok_sampling_types::ApiBackend;
+
+    let home = tempfile::tempdir().unwrap();
+    let _home = xai_grok_test_support::EnvGuard::set("GROK_HOME", home.path());
+    // This usable native key makes accidental reads observable without relying
+    // on, or changing, any real provider credential file.
+    let _key = xai_grok_test_support::EnvGuard::set(
+        "OPENROUTER_API_KEY",
+        "native-provider-key-must-not-leave-canonical-route",
+    );
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for (provider, canonical_url, native_backend) in [
+                (
+                    ModelProvider::OpenRouter,
+                    crate::agent::builtin_providers::OPENROUTER_BASE_URL,
+                    ApiBackend::OpenRouter,
+                ),
+                (
+                    ModelProvider::OpenAiCodex,
+                    crate::agent::builtin_providers::CODEX_BASE_URL,
+                    ApiBackend::OpenAiCodex,
+                ),
+            ] {
+                for (base_url, api_backend) in [
+                    ("https://custom-model.example/v1", native_backend),
+                    (canonical_url, ApiBackend::ChatCompletions),
+                ] {
+                    let (actor, _rx) = make_actor_with_auth_and_credentials(
+                        None,
+                        xai_chat_state::AuthType::ApiKey,
+                        "custom-model-key".to_owned(),
+                    )
+                    .await;
+                    let mut sampler = actor.chat_state_handle.get_sampling_config().await.unwrap();
+                    sampler.model = "shared-wire-slug".to_owned();
+                    sampler.base_url = base_url.to_owned();
+                    sampler.api_backend = api_backend.clone();
+                    actor.chat_state_handle.update_sampling_config(sampler);
+                    seed_provider_memo(&actor, xai_grok_login::AuthProviderRef::builtin(provider)).await;
+
+                    actor.refresh_token_if_expired().await;
+                    assert_eq!(
+                        actor.chat_state_handle.get_credentials().await.api_key.as_deref(),
+                        Some("custom-model-key"),
+                        "{provider} pre-turn refresh must preserve custom credentials on {base_url} / {api_backend:?}",
+                    );
+
+                    let recovery = actor.handle_sampling_failure(
+                        auth_error(), 0, transient_state(0, true), false, TurnParkState::Fresh,
+                    ).await;
+                    assert!(recovery.is_err(), "a mismatched native provider must not resubmit on 401");
+                    assert_eq!(
+                        actor.chat_state_handle.get_credentials().await.api_key.as_deref(),
+                        Some("custom-model-key"),
+                        "{provider} 401 recovery must preserve custom credentials on {base_url} / {api_backend:?}",
+                    );
+                }
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial]
+async fn native_openrouter_preturn_adopts_key_and_clears_it_after_logout() {
+    let home = tempfile::tempdir().unwrap();
+    let _home = xai_grok_test_support::EnvGuard::set("GROK_HOME", home.path());
+    let _no_key = xai_grok_test_support::EnvGuard::unset("OPENROUTER_API_KEY");
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let (actor, _rx) = make_actor_with_auth_and_credentials(
+                None,
+                xai_chat_state::AuthType::ApiKey,
+                "old-provider-key".to_owned(),
+            )
+            .await;
+            let mut sampler = actor.chat_state_handle.get_sampling_config().await.unwrap();
+            sampler.base_url = crate::agent::builtin_providers::OPENROUTER_BASE_URL.to_owned();
+            sampler.api_backend = xai_grok_sampling_types::ApiBackend::OpenRouter;
+            actor.chat_state_handle.update_sampling_config(sampler);
+            seed_provider_memo(
+                &actor,
+                xai_grok_login::AuthProviderRef::builtin(
+                    xai_grok_login::provider_auth::ModelProvider::OpenRouter,
+                ),
+            )
+            .await;
+
+            {
+                let _key = xai_grok_test_support::EnvGuard::set(
+                    "OPENROUTER_API_KEY",
+                    "current-provider-key",
+                );
+                actor.refresh_token_if_expired().await;
+                assert_eq!(
+                    actor
+                        .chat_state_handle
+                        .get_credentials()
+                        .await
+                        .api_key
+                        .as_deref(),
+                    Some("current-provider-key"),
+                );
+            }
+            // Removing the final credential source has the same read-side
+            // behavior as `grok logout openrouter` removing its saved key.
+            actor.refresh_token_if_expired().await;
+            assert_eq!(
+                actor.chat_state_handle.get_credentials().await.api_key,
+                None
+            );
+        })
+        .await;
+}
+
 /// Regression: switching from a provider-backed model to a first-party model must drop the minted provider token from the chat credentials.
 /// The token must never go out on a later request to `api.x.ai`.
 /// Mirrors the forward direction in `set_session_model_invalidates_byok_memo_for_same_model_id`.

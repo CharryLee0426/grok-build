@@ -438,7 +438,7 @@ impl SessionActor {
         filter_cursor_tools_by_plan_mode(defs, plan_active)
     }
 
-    /// Messages-backed models never see `use_tool`'s file forms: the Anthropic Messages API rejects the schema's
+    /// Messages and OpenRouter models never see `use_tool`'s file forms: Anthropic rejects the schema's
     /// root-level union (`oneOf`) with HTTP 400, which fails every turn. Checked per request because a model switch
     /// mid-session keeps the finalized toolset.
     pub(crate) async fn mcp_file_forms_hidden(&self) -> bool {
@@ -446,7 +446,11 @@ impl SessionActor {
             .get_sampling_config()
             .await
             .is_some_and(|config| {
-                config.api_backend == xai_grok_sampling_types::ApiBackend::Messages
+                matches!(
+                    config.api_backend,
+                    xai_grok_sampling_types::ApiBackend::Messages
+                        | xai_grok_sampling_types::ApiBackend::OpenRouter
+                )
             })
     }
 
@@ -482,8 +486,25 @@ impl SessionActor {
         {
             return (memo.facts, memo.provider.clone());
         }
-        let (fresh, provider) =
+        let (mut fresh, mut provider) =
             crate::agent::config::resolve_model_auth_facts_and_provider(model_id);
+        // Explicit provider IDs added to a live catalog need not exist in the
+        // disk config yet. Keep their locally attached OAuth refresh reference.
+        if fresh.byok == ModelByok::NotByok {
+            let models = self.models_manager.models();
+            if let Some(entry) = crate::agent::config::find_model_by_id(&models, model_id)
+                && entry
+                    .auth_provider
+                    .as_ref()
+                    .is_some_and(|p| p.builtin_provider().is_some())
+            {
+                fresh = crate::agent::config::ModelAuthFacts {
+                    byok: ModelByok::Byok,
+                    auth_scheme: entry.info.auth_scheme,
+                };
+                provider = entry.effective_auth_provider().cloned();
+            }
+        }
         if fresh.byok == ModelByok::Unknown {
             if let Some(memo) = self.model_auth_memo.borrow().as_ref()
                 && memo.model_id == model_id
@@ -507,6 +528,27 @@ impl SessionActor {
         self.chat_state_handle.update_credentials(creds);
     }
 
+    /// Wire model slugs are not unique across providers. Recheck the actual
+    /// destination before adopting a native bearer from a slug-based auth lookup.
+    async fn provider_matches_sampling_route(
+        &self,
+        provider: &xai_grok_login::AuthProviderRef,
+    ) -> bool {
+        let Some(builtin) = provider.builtin_provider() else {
+            return true;
+        };
+        self.chat_state_handle
+            .get_sampling_config()
+            .await
+            .is_some_and(|config| {
+                crate::agent::builtin_providers::matches_auth_route(
+                    builtin,
+                    &config.base_url,
+                    config.api_backend,
+                )
+            })
+    }
+
     /// Pre-turn arm for a provider-backed model: mint on a cold cache, re-mint near expiry, and adopt a rotation that chat state missed.
     /// No-op when `current_key` is already the fresh cached token.
     async fn refresh_provider_token_pre_turn(
@@ -515,6 +557,9 @@ impl SessionActor {
         current_key: Option<&str>,
         model_id: &str,
     ) {
+        if !self.provider_matches_sampling_route(provider).await {
+            return;
+        }
         match provider.ensure_fresh_token(current_key).await {
             xai_grok_login::ProviderRefreshOutcome::Rotated(new_key) => {
                 tracing::info!(
@@ -545,7 +590,15 @@ impl SessionActor {
                 );
             }
             // Unusable provider: already warned once, no per-turn breadcrumb.
-            xai_grok_login::ProviderRefreshOutcome::Unusable => {}
+            xai_grok_login::ProviderRefreshOutcome::Unusable => {
+                if provider.builtin_provider().is_some() {
+                    // A CLI logout removes the provider store. Do not keep using
+                    // the previous bearer in an already connected session.
+                    let mut creds = self.chat_state_handle.get_credentials().await;
+                    creds.api_key = None;
+                    self.chat_state_handle.update_credentials(creds);
+                }
+            }
         }
     }
 
@@ -553,6 +606,9 @@ impl SessionActor {
     /// A missing key means the cold mint failed and the request went out unauthenticated, so mint instead.
     /// Returns `false` when the fresh-mint guard blocked the re-run or the helper failed; the 401 then becomes a terminal error.
     async fn try_provider_401_recovery(&self, provider: &xai_grok_login::AuthProviderRef) -> bool {
+        if !self.provider_matches_sampling_route(provider).await {
+            return false;
+        }
         let rejected_key = self.chat_state_handle.get_credentials().await.api_key;
         let recovered = match rejected_key {
             Some(ref rejected_key) => provider.recover_rejected_token(rejected_key).await,
@@ -739,6 +795,14 @@ impl SessionActor {
             &cfg.base_url,
         );
         let request_compression = crate::util::config::request_compression_for_url(&cfg.base_url);
+        let supports_tools = (cfg.api_backend == xai_grok_sampling_types::ApiBackend::OpenRouter)
+            .then(|| {
+                crate::agent::builtin_providers::cached_models()
+                    .iter()
+                    .find(|model| model.id == cfg.model)
+                    .map(|model| model.supports_tools())
+            })
+            .flatten();
         SamplingConfig {
             api_key,
             base_url: cfg.base_url,
@@ -788,6 +852,7 @@ impl SessionActor {
                 None
             },
             supports_backend_search: self.supports_backend_search.get(),
+            supports_tools,
             compactions_remaining: self.compactions_remaining.get(),
             compaction_at_tokens: self.compaction_at_tokens.get(),
             // The sampler sends the opt-in header itself when this is set.
@@ -1585,10 +1650,16 @@ impl SessionActor {
             msg.push_str(&format!("\n  Model:     {current_model}"));
             msg.push_str(&format!("\n  Auth:      {auth_mode_str}"));
             if let Some(ref provider) = auth_provider {
-                msg.push_str(&format!(
-                    "\n  Provider:  [auth_provider.{}] (check the provider command and the debug log)",
-                    provider.name
-                ));
+                if let Some(builtin) = provider.builtin_provider() {
+                    msg.push_str(&format!(
+                        "\n  Provider:  {builtin} (run `grok login {builtin}` to sign in again)"
+                    ));
+                } else {
+                    msg.push_str(&format!(
+                        "\n  Provider:  [auth_provider.{}] (check the provider command and the debug log)",
+                        provider.name
+                    ));
+                }
             }
             msg.push_str(&format!("\n  Version:   {client_version}"));
             if available.is_empty() {

@@ -13,6 +13,21 @@ struct SessionConfigInputs {
     effort_options: Vec<ReasoningEffortOption>,
     current_effort: Option<xai_grok_sampling_types::ReasoningEffort>,
 }
+/// Native providers have credentials independent of the process's xAI login.
+/// Preserve the existing session-auth behavior for customer gateways.
+pub(super) fn set_xai_baseline_key(config: &mut SamplingConfig, key: String) -> bool {
+    let native_backend = matches!(
+        config.api_backend,
+        crate::sampling::ApiBackend::OpenRouter | crate::sampling::ApiBackend::OpenAiCodex
+    );
+    let native_host = url::Url::parse(&config.base_url)
+        .is_ok_and(|url| matches!(url.host_str(), Some("openrouter.ai" | "chatgpt.com")));
+    if native_backend || native_host {
+        return false;
+    }
+    config.api_key = Some(key);
+    true
+}
 /// `preferred` model, else catalog `current`, else first with own credentials.
 fn byok_from_models(
     models: &indexmap::IndexMap<String, ModelEntry>,
@@ -2038,12 +2053,14 @@ impl MvpAgent {
                 .await;
         }
     }
-    /// Pure id-to-entry resolver (the `allowed_models` gate lives in `set_session_model`).
+    /// Resolve a catalog ID, registering explicit provider-prefixed IDs locally.
+    /// The `allowed_models` gate lives in `set_session_model`.
     pub(crate) fn resolve_model_id(
         &self,
         requested: &acp::ModelId,
     ) -> Result<ModelEntry, acp::Error> {
         let requested_str = requested.0.as_ref();
+        self.models_manager.register_provider_model(requested_str);
         let models = self.models_manager.models();
         let Some(catalog_key) = resolve_catalog_key(&models, requested) else {
             tracing::debug!(
@@ -3463,8 +3480,9 @@ impl MvpAgent {
     pub(super) fn seed_client_config_auth_if_available(&self) {
         let mut sampling_config = self.sampling_config.borrow_mut();
         if sampling_config.api_key.is_none() {
-            if let Some(auth) = self.auth_manager.current_or_expired() {
-                sampling_config.api_key = Some(auth.key);
+            if let Some(auth) = self.auth_manager.current_or_expired()
+                && set_xai_baseline_key(&mut sampling_config, auth.key)
+            {
                 tracing::debug!("auth: seed_client_config set auth (SessionToken)");
                 xai_grok_telemetry::unified_log::debug(
                     "auth: seed_client_config set auth (SessionToken)",
@@ -5244,6 +5262,52 @@ impl Drop for LocalWorkspaceReapGuard {
             tokio::spawn(async move {
                 handle.shutdown().await;
             });
+        }
+    }
+}
+
+#[cfg(test)]
+mod baseline_credential_tests {
+    use super::*;
+
+    #[test]
+    fn xai_login_preserves_native_provider_baseline_routes() {
+        for url in [
+            crate::agent::builtin_providers::OPENROUTER_BASE_URL,
+            crate::agent::builtin_providers::CODEX_BASE_URL,
+        ] {
+            for existing in [None, Some("provider-owned-key".to_owned())] {
+                let mut config = SamplingConfig {
+                    base_url: url.to_owned(),
+                    api_key: existing.clone(),
+                    ..Default::default()
+                };
+                assert!(!set_xai_baseline_key(&mut config, "xai-login-key".into()));
+                assert_eq!(
+                    config.api_key, existing,
+                    "xAI login changed credentials for {url}"
+                );
+            }
+        }
+        for backend in [
+            crate::sampling::ApiBackend::OpenRouter,
+            crate::sampling::ApiBackend::OpenAiCodex,
+        ] {
+            let mut config = SamplingConfig {
+                base_url: "https://provider-proxy.example/v1".into(),
+                api_backend: backend,
+                ..Default::default()
+            };
+            assert!(!set_xai_baseline_key(&mut config, "xai-login-key".into()));
+            assert!(config.api_key.is_none());
+        }
+        for url in ["https://api.x.ai/v1", "https://customer-gateway.example/v1"] {
+            let mut config = SamplingConfig {
+                base_url: url.into(),
+                ..Default::default()
+            };
+            assert!(set_xai_baseline_key(&mut config, "xai-login-key".into()));
+            assert_eq!(config.api_key.as_deref(), Some("xai-login-key"));
         }
     }
 }
