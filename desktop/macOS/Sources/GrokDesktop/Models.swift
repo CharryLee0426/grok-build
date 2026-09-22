@@ -15,6 +15,8 @@ struct Conversation: Identifiable, Codable {
     var updatedAt = Date()
     var isArchived = false
     var isPinned = false
+    var modelID: String?
+    var reasoningID: String?
 }
 
 struct Message: Identifiable, Codable {
@@ -30,6 +32,45 @@ struct Message: Identifiable, Codable {
 struct ModelOption: Identifiable, Equatable {
     var id: String
     var name: String
+    var reasoningOptions: [ModelOption] = []
+    var defaultReasoningID = ""
+}
+
+enum SessionOptions {
+    static func models(_ state: [String: Any]) -> [ModelOption] {
+        (state["availableModels"] as? [[String: Any]] ?? []).compactMap { value in
+            guard let id = value["modelId"] as? String else { return nil }
+            let meta = value["_meta"] as? [String: Any] ?? [:]
+            var model = ModelOption(id: id, name: value["name"] as? String ?? id)
+            guard meta["supportsReasoningEffort"] as? Bool == true else { return model }
+            let valid = Set(["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+            let efforts = (meta["reasoningEfforts"] as? [Any] ?? []).compactMap { entry -> (ModelOption, String, Bool)? in
+                let item = entry as? [String: Any] ?? ["value": entry]
+                guard let canonical = item["value"] as? String, valid.contains(canonical) else { return nil }
+                let id = item["id"] as? String ?? canonical
+                return (ModelOption(id: id, name: item["label"] as? String ?? label(canonical)), canonical, item["default"] as? Bool ?? false)
+            }
+            model.reasoningOptions = efforts.isEmpty
+                ? ["minimal", "low", "medium", "high", "xhigh"].map { ModelOption(id: $0, name: label($0)) }
+                : efforts.map { $0.0 }
+            let current = meta["reasoningEffort"] as? String ?? ""
+            model.defaultReasoningID = efforts.first(where: { $0.1 == current })?.0.id
+                ?? model.reasoningOptions.first(where: { $0.id == current })?.id
+                ?? (valid.contains(current) ? current : nil)
+                ?? efforts.first(where: { $0.2 })?.0.id ?? model.reasoningOptions.first?.id ?? ""
+            return model
+        }
+    }
+
+    static func choices(_ option: [String: Any]) -> [ModelOption] {
+        (option["options"] as? [[String: Any]] ?? []).flatMap { item -> [ModelOption] in
+            if item["options"] != nil { return choices(item) }
+            guard let id = item["value"] as? String else { return [] }
+            return [ModelOption(id: id, name: item["name"] as? String ?? id)]
+        }
+    }
+
+    private static func label(_ value: String) -> String { value == "xhigh" ? "Extra high" : value.capitalized }
 }
 
 struct PermissionOption: Identifiable {
@@ -81,14 +122,22 @@ struct QuestionRequest: Identifiable {
 
 struct RunState {
     var isRunning = false
+    var isConfiguring = false
     var phase = "Ready"
     var approvals: [Approval] = []
     var models: [ModelOption] = []
     var modes: [ModelOption] = []
     var modelID = ""
     var modeID = ""
+    var reasoningOptions: [ModelOption] = []
+    var reasoningID = ""
     var plan: [PlanEntry] = []
     var questions: [QuestionRequest] = []
+    var commands: [SlashCommand] = []
+    var commandsLoaded = false
+    var availableTools: [String]?
+    var goal: GoalState?
+    var subagents: [SubagentState] = []
 }
 
 struct DesktopState: Codable {
@@ -96,11 +145,35 @@ struct DesktopState: Codable {
     var conversations: [Conversation] = []
     var selectedProjectID: UUID?
     var selectedConversationID: UUID?
+    var selectedModelID: String?
+    var selectedReasoningID: String?
+    var deletedSessionIDs: Set<String> = []
+}
+
+extension DesktopState {
+    private enum CodingKeys: String, CodingKey {
+        case projects, conversations, selectedProjectID, selectedConversationID
+        case selectedModelID, selectedReasoningID, deletedSessionIDs
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        projects = try values.decodeIfPresent([Project].self, forKey: .projects) ?? []
+        conversations = try values.decodeIfPresent([Conversation].self, forKey: .conversations) ?? []
+        selectedProjectID = try values.decodeIfPresent(UUID.self, forKey: .selectedProjectID)
+        selectedConversationID = try values.decodeIfPresent(UUID.self, forKey: .selectedConversationID)
+        selectedModelID = try values.decodeIfPresent(String.self, forKey: .selectedModelID)
+        selectedReasoningID = try values.decodeIfPresent(String.self, forKey: .selectedReasoningID)
+        deletedSessionIDs = try values.decodeIfPresent(Set<String>.self, forKey: .deletedSessionIDs) ?? []
+    }
 }
 
 enum DesktopPaths {
     static var stateFile: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        if let path = ProcessInfo.processInfo.environment["GROK_DESKTOP_STATE_FILE"], path.hasPrefix("/") {
+            return URL(fileURLWithPath: path)
+        }
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Grok Desktop", isDirectory: true).appendingPathComponent("state.json")
     }
 

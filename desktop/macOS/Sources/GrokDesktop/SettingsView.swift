@@ -1,56 +1,152 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
     @AppStorage("appearance") private var appearance = "system"
+    @StateObject private var accounts = AccountStore()
+    @State private var signingIn: AccountProvider?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            HStack {
-                GrokMark(size: 28)
-                Text("Make yourself at home").font(.system(size: 20, weight: .medium, design: .serif))
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                GrokMark(size: 36)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Settings").font(.system(size: 24, weight: .semibold))
+                    Text("Make yourself at home").font(.system(size: 14)).foregroundStyle(Theme.muted)
+                }
                 Spacer()
                 IconButton(icon: "xmark", help: "Close settings") { dismiss() }
             }
-            VStack(alignment: .leading, spacing: 10) {
-                Text("Appearance").font(.system(size: 12, weight: .semibold))
-                Picker("Appearance", selection: $appearance) { Text("System").tag("system"); Text("Light").tag("light"); Text("Dark").tag("dark") }.pickerStyle(.segmented).labelsHidden()
-            }
-            Divider()
-            VStack(alignment: .leading, spacing: 10) {
-                HStack { Text("Grok harness").font(.system(size: 12, weight: .semibold)); Spacer(); Text("agent stdio · ACP v1").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.muted) }
-                Text("Connect the Grok binary built from this repository, or an installed Grok CLI.").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                HStack {
-                    TextField("/path/to/grok", text: $store.binaryPath).textFieldStyle(.roundedBorder).font(.system(size: 11, design: .monospaced))
-                    Button("Browse…") { store.chooseBinary() }.buttonStyle(SubtleButtonStyle())
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Label("Appearance", systemImage: "circle.lefthalf.filled")
+                            .font(.system(size: 15, weight: .semibold))
+                        Picker("Appearance", selection: $appearance) {
+                            Text("System").tag("system")
+                            Text("Light").tag("light")
+                            Text("Dark").tag("dark")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .controlSize(.large)
+                    }
+                    .padding(18)
+                    .glassSurface(cornerRadius: 18)
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack {
+                            Label("Accounts", systemImage: "person.crop.circle")
+                                .font(.system(size: 15, weight: .semibold))
+                            Spacer()
+                            IconButton(icon: "arrow.clockwise", help: "Refresh accounts") { accounts.refresh() }
+                        }
+                        Text("Your connected accounts are shared with the Grok CLI.")
+                            .font(.system(size: 14)).foregroundStyle(Theme.muted)
+                        VStack(spacing: 0) {
+                            ForEach(AccountProvider.allCases) { provider in
+                                if provider != .xai { Divider().padding(.leading, 46) }
+                                accountRow(provider)
+                            }
+                        }
+                        if store.loginRunning {
+                            HStack(spacing: 9) {
+                                ProgressView().controlSize(.small)
+                                Text("Complete sign-in in your browser…")
+                                    .font(.system(size: 13)).foregroundStyle(Theme.muted)
+                                Spacer()
+                                Button("Cancel") { store.cancelLogin() }
+                            }
+                        }
+                        if !store.loginLog.isEmpty {
+                            DisclosureGroup("Sign-in details") {
+                                ScrollView {
+                                    Text(store.loginLog)
+                                        .font(.system(size: 12, design: .monospaced))
+                                        .textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                                .frame(height: 90)
+                                .padding(10)
+                                .background(Theme.sidebar.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+                            }
+                            .font(.system(size: 13))
+                        }
+                    }
+                    .padding(18)
+                    .glassSurface(cornerRadius: 18)
                 }
-                HStack(spacing: 5) {
-                    let valid = FileManager.default.isExecutableFile(atPath: store.binaryPath)
-                    Image(systemName: valid ? "checkmark.circle" : "info.circle")
-                    Text(valid ? "Executable found. Changes apply to new connections." : "Build the CLI first, then choose target/release/xai-grok-pager.")
-                }.font(.system(size: 10)).foregroundStyle(Theme.muted)
+                .padding(3)
             }
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Accounts").font(.system(size: 12, weight: .semibold))
-                Text("Uses the same accounts, models, MCP servers, and configuration as your CLI. Sign in through your browser to connect a provider.").font(.system(size: 12)).foregroundStyle(Theme.muted).lineSpacing(3)
-                HStack(spacing: 8) {
-                    Button("xAI") { store.login(provider: "xai") }.disabled(store.loginRunning)
-                    Button("OpenRouter") { store.login(provider: "openrouter") }.disabled(store.loginRunning)
-                    Button("OpenAI Codex") { store.login(provider: "openai-codex") }.disabled(store.loginRunning)
-                    Spacer()
-                    if store.loginRunning { ProgressView().controlSize(.small); Button("Cancel") { store.cancelLogin() } }
-                }.buttonStyle(SubtleButtonStyle()).font(.system(size: 11))
-                if !store.loginLog.isEmpty {
-                    ScrollView { Text(store.loginLog).font(.system(size: 10, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(height: 90).padding(10).background(Theme.sidebar).clipShape(RoundedRectangle(cornerRadius: 8))
-                }
-            }
-            Divider()
+            .scrollIndicators(.hidden)
+            .frame(maxHeight: .infinity)
+
             HStack(alignment: .top, spacing: 9) {
-                Image(systemName: "internaldrive")
-                Text("Tasks stay on this Mac. The harness manages execution, sandboxing, and credentials; approval requests appear in your conversation.").lineSpacing(3)
-            }.font(.system(size: 11)).foregroundStyle(Theme.muted)
-            HStack { Text("Grok Desktop · 0.1.0").font(.system(size: 10)).foregroundStyle(Theme.muted); Spacer(); Button("Done") { dismiss() }.buttonStyle(SubtleButtonStyle()).keyboardShortcut(.defaultAction) }
-        }.padding(30).frame(width: 580).foregroundStyle(Theme.ink).background(Theme.canvas)
+                Image(systemName: "lock.shield")
+                Text("Tasks stay on this Mac. You review permissions in the conversation.")
+                    .lineSpacing(3)
+            }
+            .font(.system(size: 13)).foregroundStyle(Theme.muted)
+
+            HStack {
+                Text("Grok Desktop · 0.1.0").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                Spacer()
+                Button("Done") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 620, height: 600)
+        .foregroundStyle(Theme.ink)
+        .background(Theme.canvas)
+        .onAppear { accounts.refresh() }
+        .onChange(of: store.loginRunning) { _, running in
+            accounts.refresh()
+            if !running { signingIn = nil }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in accounts.refresh() }
+        .onReceive(Timer.publish(every: 5, on: .main, in: .common).autoconnect()) { _ in accounts.refresh() }
+    }
+
+    private func accountRow(_ provider: AccountProvider) -> some View {
+        let status = accounts.status(for: provider)
+        return HStack(spacing: 12) {
+            Image(systemName: status.isConnected ? "person.crop.circle.badge.checkmark" : "person.crop.circle")
+                .font(.system(size: 26, weight: .regular))
+                .foregroundStyle(status.isConnected ? Theme.green : Theme.muted)
+                .frame(width: 34)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(provider.name).font(.system(size: 14, weight: .semibold))
+                if let identity = status.identity {
+                    Text(identity).font(.system(size: 14)).textSelection(.enabled)
+                        .lineLimit(1).truncationMode(.middle).help(identity)
+                }
+                Text(status.detail).font(.system(size: 12)).foregroundStyle(Theme.muted).lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if status.isConnected {
+                Label("Connected", systemImage: "checkmark.circle.fill")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(Theme.green)
+                    .fixedSize()
+            } else {
+                Button(signingIn == provider && store.loginRunning ? "Signing in…" : "Sign in") {
+                    signingIn = provider
+                    if !accounts.signIn(provider: provider, loginRunning: store.loginRunning, perform: store.login) {
+                        signingIn = nil
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.regular)
+                .disabled(store.loginRunning)
+                .accessibilityLabel("Sign in to \(provider.name)")
+            }
+        }
+        .padding(.vertical, 10)
     }
 }

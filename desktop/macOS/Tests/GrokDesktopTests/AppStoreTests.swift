@@ -11,7 +11,7 @@ final class AppStoreTests: XCTestCase {
         let store: AppStore
         let conversationID: UUID
 
-        init(firstLoad: String, existingMessages: [Message] = [], advertiseAuth: Bool = true) throws {
+        init(firstLoad: String, existingMessages: [Message] = [], advertiseAuth: Bool = true, configDelay: Double = 0, rejectConfig: Bool = false) throws {
             guard FileManager.default.isExecutableFile(atPath: "/usr/bin/python3") else { throw XCTSkip("Requires /usr/bin/python3") }
             directory = FileManager.default.temporaryDirectory.appendingPathComponent("grok-store-tests-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -28,6 +28,16 @@ def emit(value):
     print(json.dumps(value), flush=True)
 def reply(request, value):
     emit({"jsonrpc": "2.0", "id": request["id"], "result": value})
+model_id = "fixture-build"
+effort_id = "medium"
+def models():
+    return {"currentModelId": model_id, "availableModels": [
+        {"modelId": name, "name": name, "_meta": {"supportsReasoningEffort": True, "reasoningEffort": effort_id, "reasoningEfforts": ["low", "medium", "high"]}}
+        for name in ["fixture-build", "fixture-fast"]]}
+def config():
+    return {"configOptions": [
+        {"id": "model", "type": "select", "currentValue": model_id, "options": [{"value": name, "name": name} for name in ["fixture-build", "fixture-fast"]]},
+        {"id": "reasoning_effort", "type": "select", "currentValue": effort_id, "options": [{"value": name, "name": name.title()} for name in ["low", "medium", "high"]]}]}
 def chunk(kind, text):
     emit({"jsonrpc": "2.0", "method": "session/update", "params": {"sessionId": "existing-session", "update": {"sessionUpdate": kind, "content": {"type": "text", "text": text}}}})
 for line in sys.stdin:
@@ -36,29 +46,52 @@ for line in sys.stdin:
         log.write(json.dumps(request) + "\n")
     method = request.get("method")
     if method == "initialize":
-        reply(request, {"authMethods": [{"id": "cached_token"}] if ADVERTISE_AUTH else []})
+        reply(request, {"authMethods": [{"id": "cached_token"}] if ADVERTISE_AUTH else [], "_meta": {"modelState": models()}})
     elif method == "authenticate":
         reply(request, {})
+    elif method == "_x.ai/models/list":
+        reply(request, {"result": models()})
+    elif method == "_x.ai/commands/list":
+        reply(request, {"commands": []})
+    elif method == "session/list":
+        reply(request, {"sessions": [{"sessionId": "existing-session", "title": "Imported task"}]})
+    elif method == "session/new":
+        reply(request, {"sessionId": "new-session", "models": models(), **config()})
+    elif method == "session/set_config_option":
+        time.sleep(CONFIG_DELAY)
+        if REJECT_CONFIG:
+            emit({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32602, "message": "Unsupported setting"}})
+        else:
+            value = request["params"]["value"]
+            assert isinstance(value, str), "ACP config value must be a string"
+            if request["params"]["configId"] == "model":
+                model_id = value
+            else:
+                effort_id = value
+            reply(request, config())
     elif method == "session/load":
         if attempt == 1:
             FIRST_LOAD
         chunk("user_message_chunk", "Original question")
         chunk("agent_message_chunk", "Complete answer")
-        reply(request, {})
+        reply(request, {"models": models(), **config()})
     elif method == "session/prompt":
         chunk("agent_message_chunk", "New answer")
         reply(request, {"stopReason": "end_turn"})
+    elif method is not None and "id" in request:
+        emit({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "Unsupported fixture method"}})
 """#
+                .replacingOccurrences(of: "CONFIG_DELAY", with: String(configDelay))
+                .replacingOccurrences(of: "REJECT_CONFIG", with: rejectConfig ? "True" : "False")
                 .replacingOccurrences(of: "ADVERTISE_AUTH", with: advertiseAuth ? "True" : "False")
                 .replacingOccurrences(of: "FIRST_LOAD", with: firstLoad.replacingOccurrences(of: "\n", with: "\n            "))
             try source.write(to: executable, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
-            store = AppStore(stateFile: directory.appendingPathComponent("state.json"), defaults: defaults)
+            store = AppStore(stateFile: directory.appendingPathComponent("state.json"), defaults: defaults, binaryPath: executable.path)
             let project = Project(path: directory.path)
             let conversation = Conversation(projectID: project.id, sessionID: "existing-session", messages: existingMessages)
             conversationID = conversation.id
             store.state = DesktopState(projects: [project], conversations: [conversation], selectedProjectID: project.id, selectedConversationID: conversation.id)
-            store.binaryPath = executable.path
         }
 
         var requests: [[String: Any]] {
@@ -228,5 +261,125 @@ time.sleep(20)
         XCTAssertEqual(store.run.phase, "Ready")
         XCTAssertEqual(store.conversation!.messages.map(\.text), ["Original question", "Complete answer", "Follow up", "New answer"])
         XCTAssertEqual(fixture.requests.filter { $0["method"] as? String == "session/prompt" }.count, 1)
+    }
+
+    func testPreparingReopenedTaskPopulatesModelsWithoutSendingPrompt() async throws {
+        let fixture = try Fixture(firstLoad: "pass", existingMessages: [Message(kind: .assistant, text: "Saved answer")])
+        defer { fixture.cleanup() }
+        await fixture.store.prepareSessionOptions()
+        await fixture.store.loadImportedConversation()
+        XCTAssertEqual(fixture.store.run.modelID, "fixture-build")
+        XCTAssertEqual(fixture.store.run.reasoningOptions.map(\.id), ["low", "medium", "high"])
+        XCTAssertEqual(fixture.requests.filter { $0["method"] as? String == "session/load" }.count, 1)
+        XCTAssertFalse(fixture.requests.contains { $0["method"] as? String == "session/prompt" })
+    }
+
+    func testNewTaskSelectionsAreAppliedBeforePromptAndSurviveRestart() async throws {
+        let fixture = try Fixture(firstLoad: "pass")
+        defer { fixture.cleanup() }
+        let store = fixture.store
+        store.newTask()
+        await store.prepareSessionOptions()
+        XCTAssertFalse(fixture.requests.contains { $0["method"] as? String == "session/new" })
+        store.setModel(try XCTUnwrap(store.run.models.first { $0.id == "fixture-fast" }))
+        store.setReasoning(try XCTUnwrap(store.run.reasoningOptions.first { $0.id == "high" }))
+        store.draft = "Use my settings"
+        store.send()
+        try await eventually { !store.run.isRunning }
+        XCTAssertEqual(store.run.modelID, "fixture-fast")
+        XCTAssertEqual(store.run.reasoningID, "high")
+        let relevant = fixture.requests.filter { ["session/set_config_option", "session/prompt"].contains($0["method"] as? String ?? "") }
+        XCTAssertEqual(relevant.map { $0["method"] as? String }, ["session/set_config_option", "session/set_config_option", "session/prompt"])
+        let firstParams = relevant.first?["params"] as? [String: Any]
+        XCTAssertEqual(firstParams?["configId"] as? String, "model")
+        XCTAssertEqual(firstParams?["value"] as? String, "fixture-fast")
+        store.shutdown()
+        let reopened = AppStore(stateFile: fixture.directory.appendingPathComponent("state.json"), defaults: fixture.defaults, binaryPath: store.binaryPath)
+        defer { reopened.shutdown() }
+        await reopened.prepareSessionOptions()
+        XCTAssertEqual(reopened.run.modelID, "fixture-fast")
+        XCTAssertEqual(reopened.run.reasoningID, "high")
+        reopened.newTask()
+        await reopened.prepareSessionOptions()
+        XCTAssertEqual(reopened.run.modelID, "fixture-fast")
+        XCTAssertEqual(reopened.run.reasoningID, "high")
+    }
+
+    func testConfigurationChangeBlocksOverlappingChoiceAndSend() async throws {
+        let fixture = try Fixture(firstLoad: "pass", configDelay: 0.15)
+        defer { fixture.cleanup() }
+        let store = fixture.store
+        await store.prepareSessionOptions()
+        store.setModel(try XCTUnwrap(store.run.models.first { $0.id == "fixture-fast" }))
+        XCTAssertTrue(store.run.isConfiguring)
+        store.setReasoning(try XCTUnwrap(store.run.reasoningOptions.first { $0.id == "high" }))
+        store.draft = "Wait until settings are confirmed"
+        store.send()
+        XCTAssertEqual(store.draft, "Wait until settings are confirmed")
+        try await eventually { !store.run.isConfiguring }
+        XCTAssertEqual(store.run.modelID, "fixture-fast")
+        XCTAssertEqual(store.conversation?.modelID, "fixture-fast")
+        XCTAssertEqual(fixture.requests.filter { $0["method"] as? String == "session/set_config_option" }.count, 1)
+        XCTAssertFalse(fixture.requests.contains { $0["method"] as? String == "session/prompt" })
+    }
+
+    func testRejectedConfigurationRetainsConfirmedSelectionAndExplainsFailure() async throws {
+        let fixture = try Fixture(firstLoad: "pass", rejectConfig: true)
+        defer { fixture.cleanup() }
+        let store = fixture.store
+        await store.prepareSessionOptions()
+        store.setModel(try XCTUnwrap(store.run.models.first { $0.id == "fixture-fast" }))
+        try await eventually { !store.run.isConfiguring }
+        XCTAssertEqual(store.run.modelID, "fixture-build")
+        XCTAssertEqual(store.conversation?.modelID, "fixture-build")
+        XCTAssertTrue(store.banner?.contains("Unsupported setting") == true)
+    }
+
+    func testDeletionRemovesTaskStateAndCannotBeResurrectedByImportAfterRestart() async throws {
+        let fixture = try Fixture(firstLoad: "pass")
+        defer { fixture.cleanup() }
+        let store = fixture.store
+        await store.prepareSessionOptions()
+        store.draft = "Discard this draft"
+        store.deleteConversation(fixture.conversationID)
+        XCTAssertNil(store.conversation)
+        XCTAssertTrue(store.state.conversations.isEmpty)
+        XCTAssertNil(store.runs[fixture.conversationID])
+        XCTAssertEqual(store.draft, "")
+        let reopened = AppStore(stateFile: fixture.directory.appendingPathComponent("state.json"), defaults: fixture.defaults, binaryPath: store.binaryPath)
+        defer { reopened.shutdown() }
+        reopened.syncHistory()
+        try await eventually { !reopened.syncing }
+        XCTAssertTrue(reopened.state.conversations.isEmpty)
+        XCTAssertTrue(reopened.state.deletedSessionIDs.contains("existing-session"))
+    }
+
+    func testDeletionCannotInterruptRunningTask() async throws {
+        let fixture = try Fixture(firstLoad: "time.sleep(20)")
+        defer { fixture.cleanup() }
+        let store = fixture.store
+        store.draft = "Active task"
+        store.send()
+        store.deleteConversation(fixture.conversationID)
+        XCTAssertNotNil(store.conversation)
+        XCTAssertTrue(store.state.deletedSessionIDs.isEmpty)
+        store.cancel()
+    }
+
+    func testOldHistoryDecodesWithoutNewPreferencesOrTombstones() throws {
+        let old = Data(#"{"projects":[],"conversations":[]}"#.utf8)
+        let state = try JSONDecoder().decode(DesktopState.self, from: old)
+        XCTAssertNil(state.selectedModelID)
+        XCTAssertTrue(state.deletedSessionIDs.isEmpty)
+    }
+
+    func testReasoningMetadataHonorsCustomIDsAndUnsupportedModels() {
+        let models = SessionOptions.models(["availableModels": [
+            ["modelId": "reasoner", "_meta": ["supportsReasoningEffort": true, "reasoningEffort": "high", "reasoningEfforts": [["id": "deep", "value": "high", "label": "Deep thinking"], ["value": "medium"]]]],
+            ["modelId": "plain", "_meta": ["supportsReasoningEffort": false, "reasoningEfforts": ["high"]]]
+        ]])
+        XCTAssertEqual(models[0].reasoningOptions.map(\.id), ["deep", "medium"])
+        XCTAssertEqual(models[0].defaultReasoningID, "deep")
+        XCTAssertTrue(models[1].reasoningOptions.isEmpty)
     }
 }

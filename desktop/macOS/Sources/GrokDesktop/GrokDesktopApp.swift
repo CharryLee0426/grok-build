@@ -14,24 +14,41 @@ struct GrokDesktopApp: App {
                 .onAppear { delegate.store = store; NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true) }
         }
         .defaultSize(width: 1240, height: 820)
-        .windowStyle(.hiddenTitleBar)
+        .defaultPosition(.center)
+        .windowStyle(.titleBar)
+        .windowToolbarStyle(.unified)
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Task") { store.newTask() }.keyboardShortcut("n")
                 Button("Open Project…") { store.addProject() }.keyboardShortcut("o", modifiers: [.command, .shift])
                 Button("Search Tasks") { store.showSearch.toggle() }.keyboardShortcut("k")
+                Button("Commands…") { store.showCommandPalette = true }.keyboardShortcut("p", modifiers: [.command, .shift])
             }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") { store.showSettings = true }.keyboardShortcut(",")
             }
             CommandMenu("Task") {
+                Button("Plan Mode") { store.executeCommand(name: "plan") }.keyboardShortcut("p", modifiers: [.command, .option]).disabled(store.run.isRunning)
+                Button("Goal…") { store.featurePanel = .goals }.disabled(store.project == nil)
+                Button("Subagents…") { store.featurePanel = .agents }.disabled(store.project == nil)
+                Divider()
                 Button("Stop") { store.cancel() }.keyboardShortcut(".").disabled(!store.run.isRunning)
                 Button("Import Harness Tasks") { store.syncHistory() }.disabled(store.project == nil || store.syncing)
                 Divider()
                 Button("Show Changes") { store.showInspector.toggle() }.keyboardShortcut("j")
                 Button("Open in Terminal") { store.openTerminal() }.disabled(store.project == nil)
                 Button("Reveal Project in Finder") { store.revealProject() }.disabled(store.project == nil)
+            }
+            CommandMenu("Extensions") {
+                Button("MCP Servers…") { store.featurePanel = .mcps }
+                Button("Skills…") { store.featurePanel = .skills }
+                Button("Plugins…") { store.featurePanel = .plugins }
+                Button("Workflows…") { store.featurePanel = .workflows }
+                Button("Agent Definitions…") { store.featurePanel = .agentDefinitions }
+                Button("Personas…") { store.featurePanel = .personas }
+                Button("Hooks…") { store.featurePanel = .hooks }
+                Button("Memory…") { store.featurePanel = .memory }
             }
         }
     }
@@ -40,6 +57,17 @@ struct GrokDesktopApp: App {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: AppStore?
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        // Load the shipped artwork directly so an in-place rebuild cannot leave
+        // the running Dock tile displaying an older Icon Services cache entry.
+        guard let iconName = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String,
+              let resources = Bundle.main.resourceURL else { return }
+        let fileName = (iconName as NSString).pathExtension.isEmpty ? iconName + ".icns" : iconName
+        if let icon = NSImage(contentsOf: resources.appendingPathComponent(fileName)) {
+            NSApp.applicationIconImage = icon
+        }
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         if store?.runs.values.contains(where: { $0.isRunning }) == true {
             let alert = NSAlert()

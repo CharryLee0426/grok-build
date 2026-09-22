@@ -7,30 +7,30 @@ repository_dir="$(cd -- "$package_dir/../.." && pwd)"
 app_dir="$package_dir/dist/Grok Desktop.app"
 grok_source="${GROK_BINARY:-$repository_dir/target/release/xai-grok-pager}"
 if [[ "$grok_source" != /* ]]; then grok_source="$PWD/$grok_source"; fi
-if [[ -n "${GROK_BINARY:-}" && ( ! -f "$grok_source" || ! -x "$grok_source" ) ]]; then
-    printf 'GROK_BINARY must point to an executable Grok CLI: %s\n' "$grok_source" >&2
+if [[ ! -f "$grok_source" || ! -x "$grok_source" ]]; then
+    printf 'A bundled Grok executable is required: %s\nBuild the release harness first or set GROK_BINARY at build time.\n' "$grok_source" >&2
     exit 1
 fi
 
+swift "$script_dir/make-icon.swift" "$package_dir/Resources/AppIcon.icns" "$package_dir/Resources/GrokMark.svg"
 swift build --package-path "$package_dir" --configuration release
 binary_dir="$(swift build --package-path "$package_dir" --configuration release --show-bin-path)"
 mkdir -p "$app_dir/Contents/MacOS" "$app_dir/Contents/Resources"
 cp "$binary_dir/GrokDesktop" "$app_dir/Contents/MacOS/GrokDesktop"
 chmod +x "$app_dir/Contents/MacOS/GrokDesktop"
 
-if [[ -f "$grok_source" && -x "$grok_source" ]]; then
-    cp "$grok_source" "$app_dir/Contents/Resources/grok"
-    chmod +x "$app_dir/Contents/Resources/grok"
-    /usr/bin/codesign --force --sign "${SIGN_IDENTITY:--}" "$app_dir/Contents/Resources/grok"
-    printf 'Bundled harness: %s\n' "$grok_source"
-else
-    # Remove a stale embedded harness when rebuilding a UI-only bundle.
-    rm -f "$app_dir/Contents/Resources/grok"
-    printf 'No release harness found. Choose a Grok executable in app Settings.\n'
-fi
-if [[ -f "$package_dir/Resources/AppIcon.icns" ]]; then
-    cp "$package_dir/Resources/AppIcon.icns" "$app_dir/Contents/Resources/AppIcon.icns"
-fi
+cp "$grok_source" "$app_dir/Contents/Resources/grok"
+chmod +x "$app_dir/Contents/Resources/grok"
+/usr/bin/codesign --force --sign "${SIGN_IDENTITY:--}" "$app_dir/Contents/Resources/grok"
+printf 'Bundled harness: %s\n' "$grok_source"
+# Give changed artwork a new resource name so Finder and Dock can distinguish
+# an in-place development rebuild from their cached icon for the same app.
+icon_hash="$(/usr/bin/shasum -a 256 "$package_dir/Resources/AppIcon.icns" | /usr/bin/cut -c 1-12)"
+icon_name="AppIcon-$icon_hash"
+for stale_icon in "$app_dir/Contents/Resources"/AppIcon-*.icns; do
+    if [[ -f "$stale_icon" ]]; then /bin/rm "$stale_icon"; fi
+done
+cp "$package_dir/Resources/AppIcon.icns" "$app_dir/Contents/Resources/$icon_name.icns"
 
 cat > "$app_dir/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -54,9 +54,13 @@ cat > "$app_dir/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
+/usr/bin/plutil -replace CFBundleIconFile -string "$icon_name" "$app_dir/Contents/Info.plist"
 /usr/bin/plutil -lint "$app_dir/Contents/Info.plist"
 # Ad hoc signing makes the local app bundle self-contained. Set SIGN_IDENTITY to
 # a Developer ID identity when producing a distributable (then notarize it).
 /usr/bin/codesign --force --deep --sign "${SIGN_IDENTITY:--}" "$app_dir"
+# Refresh only this bundle's registration; do not restart Dock or clear caches.
+/usr/bin/touch "$app_dir"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app_dir"
 printf 'Built %s\n' "$app_dir"
 printf 'Launch with: open "%s"\n' "$app_dir"
