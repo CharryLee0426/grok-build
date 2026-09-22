@@ -1,0 +1,26 @@
+[
+  {
+    "name": "read_file",
+    "description": "Read text from a workspace file.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "bash",
+    "description": "Run a command in the workspace.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {
+          "type": "string"
+        }
+      }
+    }
+  }
+]

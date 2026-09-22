@@ -2023,6 +2023,19 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
     }
     true
 }
+fn dispatch_trace_view_if_requested(args: &PagerArgs) -> bool {
+    let Some(Command::Trace(trace_args)) = &args.command else {
+        return false;
+    };
+    let Some(xai_grok_pager::trace_cmd::TraceCommand::View(view_args)) = &trace_args.command else {
+        return false;
+    };
+    if let Err(error) = xai_grok_pager::trace_view::run(view_args.clone()) {
+        eprintln!("Error: {error:#}");
+        std::process::exit(1);
+    }
+    true
+}
 fn main() {
     xai_grok_version::set_full_version(env!("VERSION_WITH_COMMIT"));
     xai_grok_telemetry::startup::mark_process_start();
@@ -2036,7 +2049,10 @@ fn main() {
         xai_grok_update::channel_name().unwrap_or_default(),
     ));
     let args = PagerArgs::parse_cli();
-    if dispatch_version_if_requested(&args) || dispatch_doctor_if_requested(&args) {
+    if dispatch_version_if_requested(&args)
+        || dispatch_doctor_if_requested(&args)
+        || dispatch_trace_view_if_requested(&args)
+    {
         return;
     }
     xai_grok_pager_minimal::install();
@@ -2328,7 +2344,14 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 init_tracing_simple("cli");
                 return xai_grok_pager::export_cmd::run(export_args);
             }
-            Command::Trace(trace_args) => {
+            Command::Trace(mut trace_args) => {
+                // Local inspection must not authenticate, fetch remote settings, or upload data.
+                if let Some(xai_grok_pager::trace_cmd::TraceCommand::View(view_args)) =
+                    trace_args.command.take()
+                {
+                    return xai_grok_pager::trace_view::run(view_args);
+                }
+                let trace_args = trace_args.into_export()?;
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let mut agent_config = xai_grok_shell::config::load_agent_config_disk_only()

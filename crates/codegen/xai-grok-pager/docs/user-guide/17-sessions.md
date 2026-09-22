@@ -21,6 +21,10 @@ Sessions are identified by a unique session ID (a UUIDv7 when Grok generates it;
 
 ## Storage Layout
 
+For a searchable view of saved events, tool inputs/results, usage, and context,
+run `grok trace view <session-id>`. Add `--html --open` for an offline browser
+report. See [Agent Trace Explorer](27-agent-traces.md).
+
 Grok stores each session in its own directory, grouped by working directory. It URL-encodes the working directory to name the group. When the encoded name exceeds 255 bytes, it instead uses a slug plus a hash and records the original path in a `.cwd` file inside the group.
 
 ```

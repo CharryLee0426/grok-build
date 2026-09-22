@@ -13,9 +13,13 @@ use xai_grok_shell::util::grok_home::grok_home;
 const TRACE_BUNDLE_FILENAME: &str = "trace_export.tar.gz";
 
 #[derive(Debug, clap::Args, Clone)]
+#[command(args_conflicts_with_subcommands = true, subcommand_negates_reqs = true)]
 pub struct TraceArgs {
+    #[command(subcommand)]
+    pub command: Option<TraceCommand>,
     /// Session ID to export/upload
-    pub session_id: String,
+    #[arg(required = true)]
+    pub session_id: Option<String>,
     /// Save locally only, skip remote upload
     #[arg(long)]
     pub local: bool,
@@ -25,6 +29,34 @@ pub struct TraceArgs {
     /// Emit machine-readable JSON output
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Debug, clap::Subcommand, Clone)]
+pub enum TraceCommand {
+    /// Explore a local agent trace in the terminal or export an interactive HTML page
+    View(crate::trace_view::TraceViewArgs),
+}
+
+/// The legacy export/upload operation remains independent of the local viewer.
+pub struct TraceExportArgs {
+    pub session_id: String,
+    pub local: bool,
+    pub output: Option<PathBuf>,
+    pub json: bool,
+}
+
+impl TraceArgs {
+    pub fn into_export(self) -> Result<TraceExportArgs> {
+        anyhow::ensure!(self.command.is_none(), "Expected a trace export operation");
+        Ok(TraceExportArgs {
+            session_id: self
+                .session_id
+                .context("A session ID is required for trace export")?,
+            local: self.local,
+            output: self.output,
+            json: self.json,
+        })
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -47,7 +79,7 @@ struct TraceResult {
     fallback_reason: Option<&'static str>,
 }
 
-pub async fn run(args: TraceArgs, agent_config: &AgentConfig) -> Result<()> {
+pub async fn run(args: TraceExportArgs, agent_config: &AgentConfig) -> Result<()> {
     let session_dir = find_session_dir(&args.session_id)?;
     if !args.json {
         eprintln!("Found session at: {}", session_dir.display());
@@ -388,7 +420,7 @@ pub fn save_local_bundle(
 }
 
 async fn run_export(
-    args: &TraceArgs,
+    args: &TraceExportArgs,
     session_dir: &Path,
     agent_config: &AgentConfig,
     fallback_reason: Option<&'static str>,
@@ -424,7 +456,7 @@ async fn run_export(
 
 /// Prints upload URL to stdout on success; saves local bundle and returns Err on failure.
 async fn run_upload(
-    args: &TraceArgs,
+    args: &TraceExportArgs,
     session_dir: &Path,
     agent_config: &AgentConfig,
 ) -> Result<()> {

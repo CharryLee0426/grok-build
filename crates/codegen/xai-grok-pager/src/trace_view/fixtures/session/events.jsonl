@@ -1,0 +1,15 @@
+{"ts": "2026-09-21T10:00:00.000Z", "type": "turn_started", "session_id": "trace-demo-session", "turn_number": 1, "model_id": "grok-code-fast-1", "yolo_mode": false, "conversation_message_count": 2, "session_relationship": "primary", "schema_version": "1.0"}
+{"ts": "2026-09-21T10:00:00.000Z", "type": "phase_changed", "phase": "streaming_reasoning"}
+{"ts": "2026-09-21T10:00:01.000Z", "type": "first_token"}
+{"ts": "2026-09-21T10:00:02.000Z", "type": "loop_started", "loop_index": 1}
+{"ts": "2026-09-21T10:00:03.000Z", "type": "tool_started", "tool_name": "read_file"}
+{"ts": "2026-09-21T10:00:04.000Z", "type": "tool_completed", "tool_name": "read_file", "tool_call_id": "call-read", "duration_ms": 143, "outcome": "success"}
+{"ts": "2026-09-21T10:00:06.000Z", "type": "permission_requested", "tool_name": "bash"}
+{"ts": "2026-09-21T10:00:07.000Z", "type": "permission_resolved", "tool_name": "bash", "decision": "allow", "wait_ms": 820}
+{"ts": "2026-09-21T10:00:08.000Z", "type": "tool_started", "tool_name": "bash"}
+{"ts": "2026-09-21T10:00:09.000Z", "type": "tool_completed", "tool_name": "bash", "tool_call_id": "call-test-first", "duration_ms": 1040, "outcome": "error"}
+{"ts": "2026-09-21T10:00:10.000Z", "type": "phase_changed", "phase": "streaming_reasoning"}
+{"ts": "2026-09-21T10:00:16.000Z", "type": "loop_started", "loop_index": 2}
+{"ts": "2026-09-21T10:00:18.000Z", "type": "tool_started", "tool_name": "bash"}
+{"ts": "2026-09-21T10:00:20.000Z", "type": "tool_completed", "tool_name": "bash", "tool_call_id": "call-test-fixed", "duration_ms": 920, "outcome": "success"}
+{"ts": "2026-09-21T10:00:28.000Z", "type": "turn_ended", "outcome": "completed"}

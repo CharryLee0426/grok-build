@@ -1,0 +1,9 @@
+{
+  "cwd": "/workspace/example-service",
+  "platform": "darwin",
+  "project_instructions": [
+    "AGENTS.md"
+  ],
+  "sandbox_profile": "workspace-write",
+  "demo": true
+}

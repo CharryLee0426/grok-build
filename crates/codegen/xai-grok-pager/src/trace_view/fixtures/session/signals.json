@@ -1,0 +1,18 @@
+{
+  "turnCount": 1,
+  "toolCallCount": 3,
+  "toolFailureCount": 1,
+  "errorCount": 1,
+  "contextTokensUsed": 3600,
+  "contextWindowTokens": 128000,
+  "contextWindowUsage": 2,
+  "sessionDurationSeconds": 28,
+  "avgTimeToFirstTokenMs": 850,
+  "toolsUsed": [
+    "read_file",
+    "bash"
+  ],
+  "modelsUsed": [
+    "grok-code-fast-1"
+  ]
+}
