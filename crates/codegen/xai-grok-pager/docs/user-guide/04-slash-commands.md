@@ -69,6 +69,10 @@ Every copy is also written to a backup file — `~/.grok/last-copy.txt` by defau
 
 Export the conversation to a file or the clipboard.
 
+### `/trace`
+
+Open the trace explorer for the current session without leaving the TUI. It shows the recorded transcript on a timeline with one lane each for system, user, reasoning, assistant, and tool entries; each bar spans the entry's recorded execution time. Select an entry to read its content, tool input and output, and raw records. Press `v` for every raw record (including phase changes and streamed chunks), `r` to take a new snapshot of a running session, and `Esc` or `q` to return to the conversation. Fullscreen only. See [Agent Trace Explorer](27-agent-traces.md).
+
 ### `/quit`
 
 Quit the application. Alias: `/exit`.

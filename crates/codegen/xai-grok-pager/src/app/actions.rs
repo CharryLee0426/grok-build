@@ -660,6 +660,8 @@ pub enum Action {
     ShowContextInfo,
     /// `/usage`: session token/cost, plus consumer credits when visible.
     ShowUsage,
+    /// `/trace`: open the trace explorer on a snapshot of the active session.
+    ShowTrace,
     /// `/usage manage`: open consumer billing (a no-op when billing is hidden).
     ManageBilling,
     /// Commit a read-only list of the queued prompts as a system block (`/queue`).
@@ -1518,6 +1520,11 @@ pub enum Effect {
     RefreshWorkspace {
         store: xai_grok_dashboard_store::WorkspaceStore,
         known_data_version: i64,
+    },
+    /// Read a session directory for the `/trace` explorer off the UI thread.
+    LoadTrace {
+        agent_id: AgentId,
+        dir: std::path::PathBuf,
     },
     /// Load card detail for a specific session (lazy, reads chat history from disk).
     LoadCardDetail {
@@ -2553,6 +2560,13 @@ pub enum TaskResult {
     WorkspaceRefreshTaskFailed {
         db_path: std::path::PathBuf,
         error: String,
+    },
+    /// A `/trace` snapshot finished loading; dropped unless that explorer is still waiting for it.
+    TraceLoaded {
+        agent_id: AgentId,
+        /// Echo of [`Effect::LoadTrace::dir`].
+        dir: std::path::PathBuf,
+        result: Result<Box<crate::trace_view::data::TraceData>, String>,
     },
     /// Card detail loaded for a session in the picker.
     CardDetailLoaded {

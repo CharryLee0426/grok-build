@@ -543,6 +543,7 @@ pub const PAGER_COMMAND_KEYS: &[&str] = &[
     "title",
     "toggle-mouse-reporting",
     "tour",
+    "trace",
     "transcript",
     "tutorial",
     "t",

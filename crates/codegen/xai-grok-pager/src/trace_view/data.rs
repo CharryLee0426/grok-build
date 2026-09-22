@@ -10,6 +10,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::transcript::{self, TranscriptEntry};
+
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
@@ -32,6 +34,9 @@ pub struct TraceData {
     pub tools: Vec<TraceTool>,
     pub artifacts: Vec<TraceArtifact>,
     pub warnings: Vec<String>,
+    /// The recorded conversation placed on recorded timing; `events` keeps every raw record.
+    #[serde(default)]
+    pub transcript: Vec<TranscriptEntry>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -285,6 +290,11 @@ fn build(source: &Path, input: Input) -> Result<TraceData> {
         }
         saved.source = source.display().to_string();
         saved.warnings.extend(input.warnings);
+        if saved.transcript.is_empty() {
+            let (entries, notes) = transcript::build(&saved);
+            saved.transcript = entries;
+            saved.warnings.extend(notes);
+        }
         return Ok(saved);
     }
     let mut data = TraceData {
@@ -306,6 +316,7 @@ fn build(source: &Path, input: Input) -> Result<TraceData> {
         tools: vec![],
         artifacts: vec![],
         warnings: input.warnings,
+        transcript: vec![],
     };
     let summary_name = shortest_named(&input.files, "summary.json");
     let usage_name = shortest_named(&input.files, "usage.json");
@@ -450,7 +461,7 @@ fn shortest_named(files: &BTreeMap<String, Vec<u8>>, suffix: &str) -> Option<Str
         .cloned()
 }
 
-fn string(value: &Value, keys: &[&str]) -> Option<String> {
+pub(super) fn string(value: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         value
             .get(*key)
@@ -460,7 +471,7 @@ fn string(value: &Value, keys: &[&str]) -> Option<String> {
     })
 }
 
-fn number(value: &Value, keys: &[&str]) -> Option<u64> {
+pub(super) fn number(value: &Value, keys: &[&str]) -> Option<u64> {
     keys.iter()
         .find_map(|key| value.get(*key).and_then(Value::as_u64))
 }
@@ -502,7 +513,7 @@ fn apply_usage(data: &mut TraceData, value: &Value) {
     }
 }
 
-fn payload(record: &Value) -> &Value {
+pub(super) fn payload(record: &Value) -> &Value {
     record
         .pointer("/params/update")
         .or_else(|| record.get("update"))
@@ -536,13 +547,13 @@ fn timestamp(record: &Value) -> Option<String> {
         .map(|time| time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
-fn time_ms(value: &Option<String>) -> Option<i64> {
+pub(super) fn time_ms(value: &Option<String>) -> Option<i64> {
     chrono::DateTime::parse_from_rfc3339(value.as_deref()?)
         .ok()
         .map(|time| time.timestamp_millis())
 }
 
-fn text_content(value: &Value) -> String {
+pub(super) fn text_content(value: &Value) -> String {
     if let Some(text) = value.as_str() {
         return text.into();
     }
@@ -600,10 +611,11 @@ fn add_record(
         }
         data.model = string(value, &["model_id", "modelId"]).or(data.model.take());
     }
+    // Prompt indices and `turn_started.turn_number` share one zero-based sequence.
     if kind == "user"
         && let Some(index) = number(value, &["prompt_index"])
     {
-        *stream_turn = index.checked_add(1);
+        *stream_turn = Some(index);
     }
     let turn = number(value, &["turn_number", "turnNumber"]).or(*stream_turn);
     if kind == "turn_ended" {
@@ -929,6 +941,9 @@ fn finish(data: &mut TraceData) {
     if missing_ids > 0 {
         data.warnings.push(format!("{missing_ids} tool records have no call ID and cannot be reliably correlated; they remain visible as individual records."));
     }
+    let (entries, notes) = transcript::build(data);
+    data.transcript = entries;
+    data.warnings.extend(notes);
     let mut seen = BTreeSet::new();
     data.warnings.retain(|warning| seen.insert(warning.clone()));
 }
@@ -1055,7 +1070,7 @@ mod tests {
             ),
         );
         let trace = load(directory.path()).unwrap();
-        assert_eq!(trace.turns.first().unwrap().number, 5);
+        assert_eq!(trace.turns.first().unwrap().number, 4);
         assert!(
             trace
                 .events
@@ -1184,7 +1199,7 @@ mod tests {
             fs::write(&path, records.to_string()).unwrap();
             let trace = load(&path).unwrap();
             assert_eq!(trace.events.len(), 2);
-            assert!(trace.events.iter().all(|event| event.turn == Some(3)));
+            assert!(trace.events.iter().all(|event| event.turn == Some(2)));
         }
     }
 

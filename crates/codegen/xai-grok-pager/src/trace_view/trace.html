@@ -9,7 +9,7 @@
   <style>/* TRACE_STYLES */</style>
 </head>
 <body>
-  <a class="skip-link" href="#event-list">Skip to events</a>
+  <a class="skip-link" href="#event-list">Skip to transcript</a>
   <div class="app">
     <header class="session-header">
       <div class="session-heading">
@@ -26,40 +26,59 @@
     <div class="session-strip"><span id="session-stats"></span><span class="read-only">Read only</span></div>
 
     <div class="toolbar" aria-label="Trace controls">
-      <span class="view-label">Trajectory</span>
-      <label class="sr-only" for="kind">Event type</label>
-      <select id="kind" class="type-filter"><option value="">All events</option></select>
+      <div class="segmented view-switch" role="group" aria-label="List">
+        <button id="view-transcript" type="button" aria-pressed="true" title="Recorded conversation (V)">Transcript</button>
+        <button id="view-records" type="button" aria-pressed="false" title="Every raw record, including phase changes and chunks (V)">All records</button>
+      </div>
+      <label class="sr-only" for="kind">Type</label>
+      <select id="kind" class="type-filter"></select>
       <button id="filters-toggle" class="button quiet" aria-expanded="false" aria-controls="filters-panel"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M5 10h10M8 15h4"/></svg>Filter</button>
       <div class="toolbar-spacer"></div>
       <button id="next-error" class="button quiet">Next error</button>
-      <div class="search-field"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.5 12.5 4 4"/></svg><label for="search" class="sr-only">Search events and raw data</label><input id="search" type="search" placeholder="Search events…" autocomplete="off" spellcheck="false"><kbd aria-hidden="true">/</kbd></div>
+      <div class="search-field"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5"/><path d="m12.5 12.5 4 4"/></svg><label for="search" class="sr-only">Search the trace</label><input id="search" type="search" placeholder="Search…" autocomplete="off" spellcheck="false"><kbd aria-hidden="true">/</kbd></div>
     </div>
     <div id="filters-panel" class="filters-panel" hidden>
-      <label>Source <select id="source-filter"><option value="">All sources</option></select></label>
+      <label id="source-filter-label">Source <select id="source-filter"><option value="">All sources</option></select></label>
       <label>Turn <select id="turn"><option value="">All turns</option></select></label>
       <button id="reset-filters" class="text-button">Clear filters</button>
     </div>
 
-    <section id="timing-overview" class="timing-overview" aria-label="Recorded timing">
-      <div class="timing-heading"><span>Timing</span><span id="timing-note"></span></div>
-      <div id="timing-track" class="timing-track" aria-label="Select a timed event"></div>
-      <div class="timing-axis"><span id="timing-start"></span><span id="timing-end"></span></div>
+    <section id="timeline" class="timeline" aria-label="Execution timeline">
+      <div class="timeline-heading">
+        <span class="timeline-title">Timeline</span>
+        <div class="segmented" role="group" aria-label="Time scale">
+          <button id="scale-active" type="button" aria-pressed="true" title="Remove idle gaps between recorded activity">Active time</button>
+          <button id="scale-wall" type="button" aria-pressed="false" title="Plot recorded wall-clock time">Wall clock</button>
+        </div>
+        <span id="timeline-note" class="timeline-note"></span>
+        <div class="toolbar-spacer"></div>
+        <span class="timeline-hint">Scroll to zoom · drag to pan</span>
+        <button id="zoom-reset" class="text-button" type="button" hidden>Reset zoom</button>
+      </div>
+      <div class="timeline-plot">
+        <div id="lane-labels" class="lane-labels" aria-hidden="true"></div>
+        <div id="timeline-track" class="timeline-track" tabindex="0" aria-label="Timeline; the transcript list is the keyboard equivalent. Plus and minus zoom, 0 resets.">
+          <div id="timeline-domain" class="timeline-domain"></div>
+        </div>
+      </div>
+      <div id="timeline-axis" class="timeline-axis" aria-hidden="true"></div>
     </section>
 
     <main id="workbench" class="workbench">
-      <section class="ledger" aria-label="Trace events">
-        <div class="ledger-heading" aria-hidden="true"><span>Event</span><span>Summary</span><span>Time</span></div>
-        <div id="event-list" class="event-list" role="list" tabindex="0" aria-label="Trace events"></div>
+      <section class="ledger" aria-label="Trace entries">
+        <div class="ledger-heading" aria-hidden="true"><span>Type</span><span>Content</span><span>Time</span></div>
+        <div id="event-list" class="event-list" role="list" tabindex="0" aria-label="Trace entries"></div>
         <div class="ledger-footer"><span id="result-count" aria-live="polite"></span><div id="pagination" class="pagination"></div></div>
       </section>
-      <aside id="inspector" class="inspector" aria-label="Record details" hidden>
-        <div class="inspector-toolbar"><span>Record details</span><div><button id="copy" class="text-button">Copy JSON</button><button id="close-inspector" class="icon-button" aria-label="Close record details" title="Close (Esc)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button></div></div>
+      <aside id="inspector" class="inspector" aria-label="Details" hidden>
+        <div class="inspector-toolbar"><span>Details</span><div><button id="copy" class="text-button">Copy JSON</button><button id="close-inspector" class="icon-button" aria-label="Close details" title="Close (Esc)"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button></div></div>
         <div class="detail-heading"><h2 id="detail-title"></h2><div id="detail-meta" class="detail-meta"></div></div>
-        <div id="detail-tabs" class="detail-tabs" role="tablist" aria-label="Record detail view"></div>
+        <div id="detail-tabs" class="detail-tabs" role="tablist" aria-label="Detail view"></div>
         <div id="detail-content" class="detail-content" role="tabpanel" tabindex="0"></div>
       </aside>
     </main>
   </div>
+  <div id="timeline-tooltip" class="timeline-tooltip" role="tooltip" hidden></div>
 
   <dialog id="session-dialog" class="session-dialog" aria-labelledby="session-dialog-title">
     <div class="dialog-header"><h2 id="session-dialog-title">Session details</h2><button id="close-session" class="icon-button" aria-label="Close session details"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button></div>
@@ -73,7 +92,7 @@
   </dialog>
   <dialog id="shortcut-dialog" class="shortcut-dialog" aria-labelledby="shortcut-title">
     <div class="dialog-header"><h2 id="shortcut-title">Keyboard shortcuts</h2><button id="close-shortcuts" class="icon-button" aria-label="Close keyboard shortcuts"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="m5 5 10 10M15 5 5 15"/></svg></button></div>
-    <dl class="shortcut-list"><dt>Search</dt><dd><kbd>/</kbd></dd><dt>Previous / next record</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> or <kbd>k</kbd> <kbd>j</kbd></dd><dt>Open record</dt><dd><kbd>Enter</kbd></dd><dt>Next error</dt><dd><kbd>e</kbd></dd><dt>Close details / clear filters</dt><dd><kbd>Esc</kbd></dd><dt>Keyboard shortcuts</dt><dd><kbd>?</kbd></dd></dl>
+    <dl class="shortcut-list"><dt>Search</dt><dd><kbd>/</kbd></dd><dt>Previous / next entry</dt><dd><kbd>↑</kbd> <kbd>↓</kbd> or <kbd>k</kbd> <kbd>j</kbd></dd><dt>Transcript / all records</dt><dd><kbd>V</kbd></dd><dt>Zoom timeline in / out / reset</dt><dd><kbd>+</kbd> <kbd>-</kbd> <kbd>0</kbd></dd><dt>Next error</dt><dd><kbd>e</kbd></dd><dt>Close details / clear filters</dt><dd><kbd>Esc</kbd></dd><dt>Keyboard shortcuts</dt><dd><kbd>?</kbd></dd></dl>
   </dialog>
   <div id="announcement" class="announcement" role="status" aria-live="polite" hidden></div>
   <noscript><p class="noscript">JavaScript is required to inspect this trace. The recorded data is embedded in this file.</p></noscript>

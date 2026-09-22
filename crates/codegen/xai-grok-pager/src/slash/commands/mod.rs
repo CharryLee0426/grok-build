@@ -61,6 +61,7 @@ pub mod theme;
 pub mod timeline;
 pub mod timestamps;
 pub mod toggle_mouse_reporting;
+pub mod trace;
 pub mod transcript;
 pub mod tutorial;
 pub mod usage;
@@ -112,6 +113,7 @@ pub fn builtin_commands() -> Vec<Arc<dyn SlashCommand>> {
         Arc::new(rename::RenameCommand),
         Arc::new(history::HistoryCommand),
         Arc::new(transcript::TranscriptCommand),
+        Arc::new(trace::TraceCommand),
         Arc::new(export::ExportCommand),
         Arc::new(copy::CopyCommand),
         Arc::new(find::FindCommand),

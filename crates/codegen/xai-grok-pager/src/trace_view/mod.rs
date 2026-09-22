@@ -7,7 +7,8 @@ use anyhow::{Context, Result};
 
 pub mod data;
 mod html;
-mod tui;
+pub mod transcript;
+pub(crate) mod tui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum TraceFormat {

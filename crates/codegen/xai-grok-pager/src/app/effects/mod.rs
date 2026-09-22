@@ -1199,6 +1199,32 @@ pub(crate) fn execute(
                     }
                 });
         }
+        Effect::LoadTrace { agent_id, dir } => {
+            tasks
+                .spawn(async move {
+                    let source = dir.clone();
+                    let result = tokio::task::spawn_blocking(move || {
+                            // A session relocated since it was bound is found by its ID.
+                            let source = if source.is_dir() {
+                                source
+                            } else {
+                                source
+                                    .file_name()
+                                    .and_then(|id| id.to_str())
+                                    .and_then(|id| crate::trace_cmd::find_session_dir(id).ok())
+                                    .unwrap_or(source)
+                            };
+                            crate::trace_view::tui::load_session(&source).map(Box::new)
+                        })
+                        .await
+                        .unwrap_or_else(|error| Err(format!("Reading the trace stopped: {error}")));
+                    TaskResult::TraceLoaded {
+                        agent_id,
+                        dir,
+                        result,
+                    }
+                });
+        }
         Effect::LoadCardDetail { host, generation, source, session_id, cwd, seq } => {
             tasks
                 .spawn(async move {
