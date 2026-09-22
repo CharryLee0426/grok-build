@@ -66,6 +66,7 @@ pub use xai_grok_pager_render::{
 #[cfg(test)]
 pub mod test_util;
 pub mod trace_cmd;
+pub mod trace_view;
 pub mod tracing;
 pub mod unified_log;
 pub mod views;

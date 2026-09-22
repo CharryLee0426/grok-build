@@ -1,0 +1,30 @@
+{
+  "sessionId": "trace-demo-session",
+  "updatedAt": "2026-09-21T10:00:28Z",
+  "session": {
+    "inputTokens": 4200,
+    "outputTokens": 640,
+    "cachedReadTokens": 2800,
+    "cacheCreationTokens": 0,
+    "reasoningTokens": 180,
+    "totalTokens": 4840,
+    "modelCalls": 3,
+    "costUsdTicks": 180000000,
+    "costIsPartial": false,
+    "usageIsIncomplete": false,
+    "turnCount": 1,
+    "primaryModelId": "grok-code-fast-1"
+  },
+  "turns": [
+    {
+      "turnNumber": 1,
+      "endedAt": "2026-09-21T10:00:28Z",
+      "inputTokens": 4200,
+      "outputTokens": 640,
+      "cachedReadTokens": 2800,
+      "totalTokens": 4840,
+      "modelCalls": 3,
+      "costUsdTicks": 180000000
+    }
+  ]
+}

@@ -871,10 +871,14 @@ pub(super) async fn run_session(
                                 {
                                     cfg.context_window = cw;
                                 }
-                                session.chat_state_handle.update_sampling_config(cfg);
-
                                 let existing = session.chat_state_handle.get_credentials().await;
-                                if let Some(r) = crate::agent::config::try_resolve_model_credentials(model_name.as_str(), existing.api_key.as_deref()) {
+                                let session_key = (existing.auth_type == xai_chat_state::AuthType::SessionToken)
+                                    .then_some(existing.api_key.as_deref()).flatten();
+                                let resolved = crate::agent::config::try_resolve_model_credentials_for_route(
+                                    model_name.as_str(), &cfg.base_url, cfg.api_backend.clone(), session_key,
+                                );
+                                session.chat_state_handle.update_sampling_config(cfg);
+                                if let Some(r) = resolved {
                                     session.chat_state_handle.update_credentials(xai_chat_state::Credentials {
                                         api_key: r.api_key,
                                         auth_type: r.auth_type,

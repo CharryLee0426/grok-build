@@ -104,6 +104,7 @@ impl acp::Agent for MvpAgent {
             );
         }
         tracing::debug!(target: "sampling_log", "Received initialize request");
+        self.models_manager.refresh_provider_catalog().await;
         xai_grok_telemetry::unified_log::info("agent initialized", None, None);
         startup::mark_agent_serving();
         let _t = xai_grok_telemetry::instrumentation::timer(
@@ -645,7 +646,7 @@ impl acp::Agent for MvpAgent {
                 let mut sampling_config = self.sampling_config.borrow_mut();
                 if sampling_config.api_key.is_none() {
                     if let Ok(api_key) = auth_method::read_xai_api_key_env() {
-                        sampling_config.api_key = Some(api_key.clone());
+                        super::agent_ops::set_xai_baseline_key(&mut sampling_config, api_key.clone());
                         if let Err(e) = xai_grok_login::store_api_key(
                             &crate::util::grok_home::grok_home(),
                             &api_key,
@@ -769,13 +770,14 @@ impl acp::Agent for MvpAgent {
                 let auth_for_settings = auth.clone();
                 {
                     let mut sampling_config = self.sampling_config.borrow_mut();
-                    sampling_config.api_key = Some(auth.key);
-                    tracing::debug!("auth: cached_token handler set api_key (SessionToken)");
-                    xai_grok_telemetry::unified_log::debug(
-                        "auth: cached_token handler set api_key (SessionToken)",
-                        None,
-                        None,
-                    );
+                    if super::agent_ops::set_xai_baseline_key(&mut sampling_config, auth.key) {
+                        tracing::debug!("auth: cached_token handler set api_key (SessionToken)");
+                        xai_grok_telemetry::unified_log::debug(
+                            "auth: cached_token handler set api_key (SessionToken)",
+                            None,
+                            None,
+                        );
+                    }
                 }
                 self.set_auth_method(arguments.method_id.clone());
                 self.ensure_telemetry_client();
@@ -906,13 +908,14 @@ impl acp::Agent for MvpAgent {
                     })?;
                 {
                     let mut sampling_config = self.sampling_config.borrow_mut();
-                    sampling_config.api_key = Some(auth.key.clone());
-                    tracing::debug!("auth: grok.com/oidc handler set api_key (SessionToken)");
-                    xai_grok_telemetry::unified_log::debug(
-                        "auth: grok.com/oidc handler set api_key (SessionToken)",
-                        None,
-                        None,
-                    );
+                    if super::agent_ops::set_xai_baseline_key(&mut sampling_config, auth.key.clone()) {
+                        tracing::debug!("auth: grok.com/oidc handler set api_key (SessionToken)");
+                        xai_grok_telemetry::unified_log::debug(
+                            "auth: grok.com/oidc handler set api_key (SessionToken)",
+                            None,
+                            None,
+                        );
+                    }
                 }
                 self.auth_manager.hot_swap(auth.clone());
                 self.enforce_grok_code_access(&auth).await;

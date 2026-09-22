@@ -80,6 +80,50 @@ pub(crate) fn resolve_default_model(
             .and_then(|rs| rs.default_model.as_deref()),
     );
 
+    // A provider-only user should be able to run bare `grok` after login. Keep
+    // every explicit model choice and existing xAI credential's default intact.
+    let explicit_preference = model_pref.as_ref().is_some_and(|pref| {
+        matches!(
+            pref.source,
+            config::ConfigSource::Cli | config::ConfigSource::Env | config::ConfigSource::Config
+        )
+    });
+    if !explicit_preference
+        && !is_session_auth
+        && cfg.create_auth_manager().current_or_expired().is_none()
+        && !crate::agent::auth_method::has_xai_api_key_env()
+        && cfg.endpoints.deployment_key.is_none()
+    {
+        let authenticated_native = |entry: &&config::ModelEntry| {
+            entry
+                .auth_provider
+                .as_ref()
+                .and_then(|p| p.builtin_provider())
+                .is_some_and(|provider| {
+                    entry.own_credential().is_some()
+                        || xai_grok_login::provider_auth::has_provider_credential(
+                            &xai_grok_config::grok_home(),
+                            provider,
+                        )
+                })
+        };
+        let preferred = visible
+            .iter()
+            .filter(|(_, entry)| authenticated_native(entry))
+            .min_by_key(|(key, _)| {
+                if key.starts_with("openai-codex/") {
+                    0
+                } else if key.as_str() == "openrouter/openrouter/auto" {
+                    1
+                } else {
+                    2
+                }
+            });
+        if let Some((key, entry)) = preferred {
+            return (key.clone(), entry.clone(), config::ConfigSource::Default);
+        }
+    }
+
     let first_or_fallback = || -> (String, ModelEntry) {
         if let Some((key, first)) = visible.first() {
             return (key.clone(), first.clone());

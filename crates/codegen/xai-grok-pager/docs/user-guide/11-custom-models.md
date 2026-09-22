@@ -2,6 +2,43 @@
 
 Grok connects to custom model endpoints for alternative providers, self-hosted models, and overriding built-in settings. This guide explains how to select models, configure endpoints, and integrate third-party providers.
 
+## OpenRouter model discovery
+
+After `grok login openrouter`, or when `OPENROUTER_API_KEY` is set, Grok fetches OpenRouter's public model catalog on startup when its cache is older than one hour. Running agents check hourly and update the `/model` picker automatically. Newly published models appear without a software update. The last successful catalog is retained during network failures in `~/.grok/openrouter-models.json`; credential values are never stored in this cache. `[features] remote_fetch = false` disables automatic network refresh.
+
+```bash
+grok models             # list available models
+grok models --refresh   # request a refresh immediately
+grok --model openrouter/<provider>/<model>
+```
+
+OpenRouter model IDs in the picker have an `openrouter/` prefix; requests use the original provider/model slug. All text-output chat models are included, including those without tool support. Models without tools can answer prompts but cannot run coding actions. Image-only, audio-only, embedding, and other non-chat models are outside this coding agent's text conversation interface.
+
+Catalog metadata supplies context limits, output limits, and capabilities. User `[model.*]` overrides take precedence over discovery. To choose a default:
+
+```toml
+[models]
+default = "openrouter/anthropic/claude-sonnet-4.6"
+```
+
+The built-in provider IDs `openrouter` and `openai-codex` also work with custom aliases, including new model slugs:
+
+```toml
+[model.my-router-model]
+model_provider = "openrouter"
+model = "anthropic/claude-sonnet-4.6"
+context_window = 1000000
+
+[model.my-codex]
+model_provider = "openai-codex"
+model = "gpt-6-astra"
+context_window = 272000
+```
+
+These inherit the provider endpoint, protocol, and saved credentials. Optional `[model_providers.openrouter]` settings apply to discovered models as well as aliases. Explicit model API keys/environment keys retain precedence. Changing a built-in provider's endpoint requires explicit credentials for that endpoint; saved provider credentials are restricted to the canonical provider URL.
+
+Implementation references: [OpenRouter OAuth PKCE](https://openrouter.ai/docs/guides/overview/auth/oauth), [OpenRouter model catalog](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties), [Pi Codex OAuth](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/auth/oauth/openai-codex.ts), and [Codex authentication](https://developers.openai.com/codex/auth/).
+
 ---
 
 ## Default Models
@@ -67,15 +104,17 @@ default = "grok-4.5"
 
 ## Supported API Backends
 
-Grok supports three API backends. Set `api_backend` in your `[model.*]` config to choose which protocol the model uses:
+Set `api_backend` in your `[model.*]` config to choose which protocol the model uses:
 
 | Value | API | Default |
 |-------|-----|---------|
 | `"chat_completions"` | OpenAI Chat Completions (`/v1/chat/completions`) | Yes |
 | `"responses"` | OpenAI Responses (`/v1/responses`) | |
 | `"messages"` | Anthropic Messages (`/v1/messages`) | |
+| `"openrouter"` | OpenRouter Chat Completions with provider-specific reasoning support | |
+| `"openai_codex"` | ChatGPT Codex subscription Responses | |
 
-When you omit `api_backend`, Grok uses `chat_completions`.
+When you omit `api_backend`, Grok uses the configured provider's backend, or `chat_completions` for a standalone custom model.
 
 To send provider-specific authentication or version headers -- for example, Anthropic's `x-api-key` -- use the `extra_headers` field described below. Grok sends those headers verbatim with every request to the endpoint.
 
@@ -93,7 +132,7 @@ name = "Display Name"                     # Shown in the model picker
 description = "Model description"          # Optional description
 api_key = "sk-..."                        # API key for this provider (optional)
 env_key = "XAI_API_KEY"                   # Env var holding the API key (optional; string or array)
-api_backend = "chat_completions"          # "chat_completions", "responses", or "messages"
+api_backend = "chat_completions"          # See the backend table above
 reasoning_summary = "concise"             # Responses API only: "none", "auto", "concise", or "detailed"
 temperature = 0.7                         # Sampling temperature
 top_p = 0.95                              # Nucleus sampling parameter

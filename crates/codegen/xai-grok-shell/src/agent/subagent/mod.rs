@@ -760,9 +760,14 @@ async fn read_parent_sampling_config(
                 creds.alpha_test_key.as_deref(),
                 &cfg.base_url,
             );
-            let auth_scheme = crate::agent::config::try_resolve_model_credentials(&cfg.model, None)
-                .map(|r| r.auth_scheme)
-                .unwrap_or_default();
+            let auth_scheme = crate::agent::config::try_resolve_model_credentials_for_route(
+                &cfg.model,
+                &cfg.base_url,
+                cfg.api_backend.clone(),
+                None,
+            )
+            .map(|r| r.auth_scheme)
+            .unwrap_or_default();
             let inherited_base_url = cfg.base_url.clone();
             let strip_guard = ctx.would_strip_fallback_key(creds.api_key.as_deref());
             let catalog_model_id = parent_catalog_model_id(ctx, &cfg.model);
@@ -775,6 +780,14 @@ async fn read_parent_sampling_config(
                 &cfg.base_url,
             );
             let inherited = xai_grok_sampler::SamplerConfig {
+                supports_tools: (cfg.api_backend == crate::sampling::ApiBackend::OpenRouter)
+                    .then(|| {
+                        crate::agent::builtin_providers::cached_models()
+                            .iter()
+                            .find(|model| model.id == cfg.model)
+                            .map(|model| model.supports_tools())
+                    })
+                    .flatten(),
                 api_key: creds.api_key,
                 base_url: cfg.base_url,
                 mtls_cert_dir: cfg.mtls_cert_dir,

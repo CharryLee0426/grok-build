@@ -2504,3 +2504,141 @@ fn personal_offline_boot_does_not_emit_a_managed_degraded_warn() {
         "a managed degraded start stays a WARN: settings can gate the client",
     );
 }
+
+#[test]
+fn register_provider_model_routes_unlisted_openrouter_and_codex_models() {
+    use crate::agent::builtin_providers::{CODEX_BASE_URL, OPENROUTER_BASE_URL};
+    use xai_grok_login::provider_auth::ModelProvider;
+    use xai_grok_sampling_types::ApiBackend;
+
+    let mgr = cold_manager(config::Config::default(), Arc::new(FailingEndpoint));
+    for (id, slug, url, backend, provider) in [
+        (
+            "openrouter/fixture-registration/new-chat",
+            "fixture-registration/new-chat",
+            OPENROUTER_BASE_URL,
+            ApiBackend::OpenRouter,
+            ModelProvider::OpenRouter,
+        ),
+        (
+            "openai-codex/future-codex-registration",
+            "future-codex-registration",
+            CODEX_BASE_URL,
+            ApiBackend::OpenAiCodex,
+            ModelProvider::OpenAiCodex,
+        ),
+    ] {
+        assert!(!mgr.models().contains_key(id));
+        mgr.register_provider_model(id);
+        let catalog = mgr.models();
+        let model = catalog.get(id).expect("explicit provider model registered");
+        assert_eq!(model.info.model, slug);
+        assert_eq!(model.info.base_url, url);
+        assert_eq!(model.info.api_backend, backend);
+        assert!(model.info.user_selectable);
+        assert_eq!(
+            model.auth_provider.as_ref().unwrap().builtin_provider(),
+            Some(provider),
+        );
+        assert!(mgr.inner.cfg.read().config_models.contains_key(id));
+    }
+
+    // Registration must not require a successful xAI catalog fetch or a network
+    // request; subsequent config rebuilds keep these session-local descriptors.
+    assert!(!mgr.has_fetched_real_catalog());
+    let cfg = mgr.inner.cfg.read().clone();
+    mgr.apply_config(cfg);
+    assert!(mgr.models().contains_key("openrouter/fixture-registration/new-chat"));
+    assert!(mgr.models().contains_key("openai-codex/future-codex-registration"));
+}
+
+#[test]
+fn register_provider_model_honors_disabled_and_allowed_models() {
+    let cfg = config_from_toml(
+        r#"
+        [models]
+        allowed_models = ["openrouter/fixture-registration/allowed"]
+        disabled_models = ["openrouter/fixture-registration/disabled", "openai-codex/disabled-registration"]
+        "#,
+    );
+    let mgr = cold_manager(cfg, Arc::new(FailingEndpoint));
+    for id in [
+        "openrouter/fixture-registration/disabled",
+        "openai-codex/disabled-registration",
+    ] {
+        mgr.register_provider_model(id);
+        assert!(!mgr.models().contains_key(id), "disabled models stay absent");
+    }
+    for id in [
+        "openrouter/fixture-registration/not-allowed",
+        "openai-codex/not-allowed-registration",
+    ] {
+        mgr.register_provider_model(id);
+        let catalog = mgr.models();
+        let model = catalog.get(id).expect("nonselectable metadata is retained");
+        assert!(!model.info.user_selectable, "registration cannot bypass allowlist");
+        assert!(mgr.task_model_error(id).is_some());
+    }
+    let allowed = "openrouter/fixture-registration/allowed";
+    mgr.register_provider_model(allowed);
+    assert!(mgr.models().get(allowed).unwrap().info.user_selectable);
+    assert!(mgr.task_model_error(allowed).is_none());
+}
+
+#[test]
+fn register_provider_model_keeps_configured_credentials_and_model_overrides() {
+    let cfg = config_from_toml(
+        r#"
+        [model_providers.openrouter]
+        api_key = "sk-provider-registration-fixture"
+
+        [model."openrouter/fixture-registration/own-key"]
+        api_key = "sk-model-registration-fixture"
+        name = "Locally configured model"
+        context_window = 64000
+        "#,
+    );
+    let mgr = cold_manager(cfg, Arc::new(FailingEndpoint));
+    for (id, expected_key) in [
+        (
+            "openrouter/fixture-registration/own-key",
+            "sk-model-registration-fixture",
+        ),
+        (
+            "openrouter/fixture-registration/provider-key",
+            "sk-provider-registration-fixture",
+        ),
+    ] {
+        mgr.register_provider_model(id);
+        let catalog = mgr.models();
+        let model = catalog.get(id).unwrap();
+        assert_eq!(
+            resolve_credentials(model, Some("xai-session-fixture")).api_key.as_deref(),
+            Some(expected_key),
+        );
+        assert!(model.effective_auth_provider().is_none());
+    }
+    let id = "openrouter/fixture-registration/own-key";
+    mgr.register_provider_model(id);
+    let catalog = mgr.models();
+    let model = catalog.get(id).unwrap();
+    assert_eq!(model.info.name.as_deref(), Some("Locally configured model"));
+    assert_eq!(model.info.context_window.get(), 64000);
+}
+
+#[test]
+fn register_provider_model_rejects_unknown_provider_or_invalid_slug() {
+    let mgr = cold_manager(config::Config::default(), Arc::new(FailingEndpoint));
+    for id in [
+        "unknown-provider/model",
+        "openrouter/",
+        "openai-codex/",
+        "openrouter/fixture/model with spaces",
+        "openai-codex/model\nwith-control",
+        "unprefixed-model",
+    ] {
+        mgr.register_provider_model(id);
+    }
+    assert!(mgr.models().is_empty());
+    assert!(mgr.inner.cfg.read().config_models.is_empty());
+}

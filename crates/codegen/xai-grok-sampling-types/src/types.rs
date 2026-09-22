@@ -239,6 +239,9 @@ pub struct ChatRequestMessage {
     /// The reasoning/thinking content from the model (for models that support extended thinking)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    /// Opaque provider reasoning blocks, including signatures needed after tool calls.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_details: Vec<Value>,
 }
 
 impl ChatRequestMessage {
@@ -251,6 +254,7 @@ impl ChatRequestMessage {
             tool_call_id: None,
             model_id: None,
             reasoning_content: None,
+            reasoning_details: Vec::new(),
         }
     }
 
@@ -263,6 +267,7 @@ impl ChatRequestMessage {
             tool_call_id: None,
             model_id: None,
             reasoning_content: None,
+            reasoning_details: Vec::new(),
         }
     }
 
@@ -279,6 +284,7 @@ impl ChatRequestMessage {
             tool_call_id: None,
             model_id: Some(model_id.into()),
             reasoning_content,
+            reasoning_details: Vec::new(),
         }
     }
 
@@ -291,6 +297,7 @@ impl ChatRequestMessage {
             tool_call_id: None,
             model_id: None,
             reasoning_content: None,
+            reasoning_details: Vec::new(),
         }
     }
 
@@ -303,6 +310,7 @@ impl ChatRequestMessage {
             tool_call_id: Some(tool_call_id.into()),
             model_id: None,
             reasoning_content: None,
+            reasoning_details: Vec::new(),
         }
     }
 
@@ -482,8 +490,14 @@ pub struct ChatResponseMessage {
     pub role: Role,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(alias = "reasoning", skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub reasoning_details: Vec<Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCallResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -619,7 +633,14 @@ pub struct ChatChunkDelta {
     pub role: Option<Role>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
+    #[serde(alias = "reasoning")]
     pub reasoning_content: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_null_default",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub reasoning_details: Vec<Value>,
     /// A JSON `null` deserializes as an empty vec.
     #[serde(
         default,
@@ -1031,6 +1052,12 @@ pub enum ApiBackend {
     ChatCompletions,
     /// Use the Responses API (/v1/responses)
     Responses,
+    /// OpenRouter's normalized Chat Completions API.
+    #[serde(rename = "openrouter", alias = "open_router")]
+    OpenRouter,
+    /// ChatGPT subscription Responses endpoint (always streaming, stateless).
+    #[serde(rename = "openai_codex", alias = "open_ai_codex")]
+    OpenAiCodex,
     /// Use the Anthropic Messages API (/v1/messages)
     Messages,
 }
@@ -1039,14 +1066,17 @@ impl ApiBackend {
     /// Whether the backend enforces a response JSON schema natively alongside tool calls.
     /// The Messages API does not (a schema there blocks tool use), so structured output there goes through the StructuredOutput tool.
     pub fn supports_native_schema(&self) -> bool {
-        matches!(self, Self::ChatCompletions | Self::Responses)
+        matches!(
+            self,
+            Self::ChatCompletions | Self::Responses | Self::OpenRouter | Self::OpenAiCodex
+        )
     }
 
     /// Whether [`ConversationRequest::prompt_cache_key`] reaches the wire. Only the Responses mapping sends it, so a key set elsewhere is inert.
     ///
     /// [`ConversationRequest::prompt_cache_key`]: crate::conversation::ConversationRequest::prompt_cache_key
     pub fn forwards_prompt_cache_key(&self) -> bool {
-        matches!(self, Self::Responses)
+        matches!(self, Self::Responses | Self::OpenAiCodex)
     }
 }
 

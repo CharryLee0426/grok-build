@@ -79,7 +79,10 @@ cargo check -p xai-grok-pager-bin            # fast validation
 ```
 
 The binary artifact is named `xai-grok-pager`; official installs ship it as
-`grok`. On first launch it opens your browser to authenticate — see the
+`grok`. On first interactive launch, choose OpenAI Codex (ChatGPT subscription),
+OpenRouter, or xAI. Existing provider credentials skip this setup; an xAI account
+is not required for OpenRouter or Codex. You can also sign in directly with
+`grok login openrouter` or `grok login openai-codex` — see the
 [authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
 
 ## Documentation

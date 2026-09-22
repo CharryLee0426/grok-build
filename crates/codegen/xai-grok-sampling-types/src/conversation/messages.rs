@@ -256,6 +256,9 @@ pub fn build_messages_request(req: &ConversationRequest) -> crate::messages::Mes
             }
             // `tco_*` blobs carry only `signature`; real reasoning sets `thinking`
             ConversationItem::Reasoning(r) => {
+                if openrouter_reasoning_details(r).is_some() {
+                    continue;
+                }
                 flush_tool_results(&mut pending_tool_results, &mut messages);
                 let thinking = reasoning_item_text(r);
                 let signature = r

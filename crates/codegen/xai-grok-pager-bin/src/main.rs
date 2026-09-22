@@ -50,6 +50,7 @@ use xai_grok_telemetry::process_info::{
     Entrypoint, Interactivity, ProcessIdentity, ReleaseChannel, set_identity, set_release_channel,
 };
 mod agent_command;
+mod provider_login;
 fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<ProcessIdentity> {
     use xai_grok_telemetry::process_info::LeaderMode::Standalone;
     let (entrypoint, interactivity) = match command {
@@ -60,11 +61,11 @@ fn process_identity(command: Option<&Command>, is_interactive: bool) -> Option<P
             Command::Inspect { .. }
             | Command::Doctor(_)
             | Command::Leader(_)
-            | Command::Logout
+            | Command::Logout { .. }
             | Command::Mcp(_)
             | Command::Plugin(_)
             | Command::Memory(_)
-            | Command::Models
+            | Command::Models { .. }
             | Command::Sessions(_)
             | Command::Usage(_)
             | Command::Setup { .. }
@@ -94,13 +95,13 @@ fn command_needs_pre_sandbox_policy_heal(command: Option<&Command>) -> bool {
         None
         | Some(Command::Agent(_))
         | Some(Command::Dashboard)
-        | Some(Command::Models)
+        | Some(Command::Models { .. })
         | Some(Command::Worktree(_)) => true,
         Some(
             Command::Inspect { .. }
             | Command::Doctor(_)
             | Command::Leader(_)
-            | Command::Logout
+            | Command::Logout { .. }
             | Command::Login { .. }
             | Command::Mcp(_)
             | Command::Plugin(_)
@@ -2022,6 +2023,19 @@ fn dispatch_doctor_if_requested(args: &PagerArgs) -> bool {
     }
     true
 }
+fn dispatch_trace_view_if_requested(args: &PagerArgs) -> bool {
+    let Some(Command::Trace(trace_args)) = &args.command else {
+        return false;
+    };
+    let Some(xai_grok_pager::trace_cmd::TraceCommand::View(view_args)) = &trace_args.command else {
+        return false;
+    };
+    if let Err(error) = xai_grok_pager::trace_view::run(view_args.clone()) {
+        eprintln!("Error: {error:#}");
+        std::process::exit(1);
+    }
+    true
+}
 fn main() {
     xai_grok_version::set_full_version(env!("VERSION_WITH_COMMIT"));
     xai_grok_telemetry::startup::mark_process_start();
@@ -2035,7 +2049,10 @@ fn main() {
         xai_grok_update::channel_name().unwrap_or_default(),
     ));
     let args = PagerArgs::parse_cli();
-    if dispatch_version_if_requested(&args) || dispatch_doctor_if_requested(&args) {
+    if dispatch_version_if_requested(&args)
+        || dispatch_doctor_if_requested(&args)
+        || dispatch_trace_view_if_requested(&args)
+    {
         return;
     }
     xai_grok_pager_minimal::install();
@@ -2266,11 +2283,20 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 return xai_grok_pager::plugin_cmd::run(plugin_args).await;
             }
-            Command::Models => {
+            Command::Models { refresh } => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let agent_config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
+                if refresh {
+                    let count =
+                        xai_grok_shell::agent::builtin_providers::refresh_openrouter_models(
+                            &agent_config,
+                            true,
+                        )
+                        .await?;
+                    println!("OpenRouter catalog refreshed: {count} models.");
+                }
                 return xai_grok_pager::models::list_available_models(&agent_config).await;
             }
             Command::Leader(leader_args) => {
@@ -2318,7 +2344,14 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 init_tracing_simple("cli");
                 return xai_grok_pager::export_cmd::run(export_args);
             }
-            Command::Trace(trace_args) => {
+            Command::Trace(mut trace_args) => {
+                // Local inspection must not authenticate, fetch remote settings, or upload data.
+                if let Some(xai_grok_pager::trace_cmd::TraceCommand::View(view_args)) =
+                    trace_args.command.take()
+                {
+                    return xai_grok_pager::trace_view::run(view_args);
+                }
+                let trace_args = trace_args.into_export()?;
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
                 let mut agent_config = xai_grok_shell::config::load_agent_config_disk_only()
@@ -2372,6 +2405,8 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 .await;
             }
             Command::Login {
+                provider,
+                with_api_key,
                 legacy: _,
                 oauth,
                 device_auth,
@@ -2379,6 +2414,13 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
             } => {
                 init_tracing_simple("cli");
                 let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
+                if let Some(provider) = provider {
+                    anyhow::ensure!(
+                        !device_auth && !devbox,
+                        "Provider login uses browser OAuth; --device-auth and --devbox apply to Grok login only"
+                    );
+                    return provider_login::login(provider, with_api_key).await;
+                }
                 let config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 let authenticated = xai_grok_login::run_cli_login(
@@ -2397,8 +2439,17 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
                 println!();
                 xai_grok_shell::instrumentation::finalize_and_exit(0);
             }
-            Command::Logout => {
+            Command::Logout { provider } => {
                 init_tracing_simple("cli");
+                if let Some(provider) = provider {
+                    xai_grok_login::provider_auth::remove_provider_credential(
+                        &xai_grok_config::grok_home(),
+                        provider.provider(),
+                    )
+                    .await?;
+                    println!("Provider credentials removed.");
+                    return Ok(());
+                }
                 let config = xai_grok_shell::config::load_agent_config_disk_only()
                     .map_err(|e| anyhow::anyhow!("Failed to create agent config: {e}"))?;
                 xai_grok_shell::agent::init::run_cli_logout(&config.grok_com_config)?;
@@ -2497,6 +2548,9 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
     }
     enforce_version_policy_or_exit();
     let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
+    if args.model.is_none() {
+        provider_login::first_run_setup().await?;
+    }
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
     let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));

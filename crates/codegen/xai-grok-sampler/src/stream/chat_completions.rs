@@ -18,6 +18,51 @@ use crate::events::{SamplingChannel, SamplingErrorInfo, SamplingEvent};
 use crate::metrics::InferenceLatencyStats;
 use crate::types::RequestId;
 
+/// OpenRouter emits text/summary fragments consecutively. Signatures belong to
+/// the completed block; encrypted blocks remain opaque and discrete (as in Pi).
+fn merge_reasoning_details(acc: &mut Vec<serde_json::Value>, deltas: Vec<serde_json::Value>) {
+    for delta in deltas {
+        let kind = delta.get("type").and_then(serde_json::Value::as_str);
+        let field = match kind {
+            Some("reasoning.text") => Some("text"),
+            Some("reasoning.summary") => Some("summary"),
+            _ => None,
+        };
+        let previous = acc.last_mut().filter(|last| {
+            field.is_some()
+                && last.get("type") == delta.get("type")
+                && match (last.get("index"), delta.get("index")) {
+                    (Some(a), Some(b)) if !a.is_null() && !b.is_null() => a == b,
+                    _ => true,
+                }
+        });
+        if let (Some(serde_json::Value::Object(previous)), Some(field)) = (previous, field) {
+            if let Some(text) = delta.get(field).and_then(serde_json::Value::as_str) {
+                match previous.get_mut(field) {
+                    Some(serde_json::Value::String(existing)) => existing.push_str(text),
+                    _ => {
+                        previous.insert(field.into(), serde_json::Value::String(text.into()));
+                    }
+                }
+            }
+            if let Some(fields) = delta.as_object() {
+                for (key, value) in fields {
+                    if key != field
+                        && !value.is_null()
+                        && previous
+                            .get(key)
+                            .is_none_or(|v| v.is_null() || v.as_str() == Some(""))
+                    {
+                        previous.insert(key.clone(), value.clone());
+                    }
+                }
+            }
+        } else {
+            acc.push(delta);
+        }
+    }
+}
+
 /// The output stream emits exactly one terminal event per request.
 /// Callers must not consume past the terminal event (the implementation `return`s after yielding it).
 pub fn stream_chat_completions<'a>(
@@ -62,6 +107,7 @@ pub fn stream_chat_completions<'a>(
 
         let mut content_acc = String::new();
         let mut reasoning_acc = String::new();
+        let mut reasoning_details_acc = Vec::new();
         // Tool call deltas keyed by positional index; each entry is (id, name, arguments_buffer)
         // The first chunk for an index carries the id and name and starts the arguments buffer; later chunks append to arguments only
         let mut tool_call_acc: BTreeMap<u32, (String, String, String)> = BTreeMap::new();
@@ -159,7 +205,19 @@ pub fn stream_chat_completions<'a>(
                     };
                 }
 
-                if let Some(thought) = delta.reasoning_content
+                // Some providers only send structured reasoning, others also
+                // send the same text in `reasoning`. Avoid displaying it twice.
+                let thought = delta.reasoning_content.or_else(|| {
+                    let text: String = delta.reasoning_details.iter().filter_map(|detail| {
+                        detail.get("text").or_else(|| detail.get("summary")).and_then(serde_json::Value::as_str)
+                    }).collect();
+                    (!text.is_empty()).then_some(text)
+                });
+                if !delta.reasoning_details.is_empty() {
+                    chunk_has_content = true;
+                    merge_reasoning_details(&mut reasoning_details_acc, delta.reasoning_details);
+                }
+                if let Some(thought) = thought
                     && !thought.is_empty()
                 {
                     if !first_token_emitted {
@@ -255,7 +313,11 @@ pub fn stream_chat_completions<'a>(
         // Build the trailing Assistant and any reasoning sibling
         let mut items: Vec<ConversationItem> = Vec::new();
         if first_choice_seen {
-            if !reasoning_acc.is_empty() {
+            if !reasoning_details_acc.is_empty() {
+                items.push(ConversationItem::Reasoning(
+                    xai_grok_sampling_types::openrouter_reasoning_item(reasoning_acc, reasoning_details_acc),
+                ));
+            } else if !reasoning_acc.is_empty() {
                 items.push(ConversationItem::Reasoning(
                     xai_grok_sampling_types::synthesized_reasoning_item(reasoning_acc),
                 ));
@@ -316,6 +378,35 @@ pub fn stream_chat_completions<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reasoning_merges_unindexed_text_but_never_concatenates_encrypted_blocks() {
+        let mut details = Vec::new();
+        merge_reasoning_details(
+            &mut details,
+            vec![serde_json::json!({"type":"reasoning.text","text":"one "})],
+        );
+        merge_reasoning_details(
+            &mut details,
+            vec![serde_json::json!({"type":"reasoning.text","text":"two","signature":"sig"})],
+        );
+        merge_reasoning_details(
+            &mut details,
+            vec![
+                serde_json::json!({"type":"reasoning.encrypted","index":1,"data":"opaque-one"}),
+                serde_json::json!({"type":"reasoning.encrypted","index":1,"data":"opaque-two"}),
+            ],
+        );
+        assert_eq!(details.len(), 3);
+        assert_eq!(
+            details.first().unwrap().get("text"),
+            Some(&serde_json::json!("one two"))
+        );
+        assert_eq!(
+            details.last().unwrap().get("data"),
+            Some(&serde_json::json!("opaque-two"))
+        );
+    }
     use futures_util::stream;
 
     fn nth<T>(xs: &[T], i: usize) -> &T {
@@ -359,6 +450,7 @@ mod tests {
             role: Some(Role::Assistant),
             content: Some(text.to_string()),
             reasoning_content: None,
+            reasoning_details: Vec::new(),
             tool_calls: vec![],
             tool_call_id: None,
         }])
@@ -459,6 +551,7 @@ mod tests {
             role: Some(Role::Assistant),
             content: None,
             reasoning_content: Some("thinking...".into()),
+            reasoning_details: Vec::new(),
             tool_calls: vec![],
             tool_call_id: None,
         }]);
@@ -555,6 +648,7 @@ mod tests {
             role: None,
             content: None,
             reasoning_content: None,
+            reasoning_details: Vec::new(),
             tool_calls: vec![ChunkToolCallDelta {
                 index: 0,
                 id: Some("call_cut".into()),
@@ -595,6 +689,7 @@ mod tests {
             role: None,
             content: None,
             reasoning_content: None,
+            reasoning_details: Vec::new(),
             tool_calls: vec![ChunkToolCallDelta {
                 index: 0,
                 id: Some("call_abc".into()),
@@ -611,6 +706,7 @@ mod tests {
             role: None,
             content: None,
             reasoning_content: None,
+            reasoning_details: Vec::new(),
             tool_calls: vec![ChunkToolCallDelta {
                 index: 0,
                 id: None,

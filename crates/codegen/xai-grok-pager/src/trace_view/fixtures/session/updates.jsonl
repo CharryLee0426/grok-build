@@ -1,0 +1,2 @@
+{"timestamp": 1789984804, "method": "session/update", "params": {"sessionId": "trace-demo-session", "update": {"sessionUpdate": "tool_call", "toolCallId": "call-read", "title": "read_file", "status": "completed", "rawInput": {"path": "src/health.ts"}}}}
+{"timestamp": 1789984809, "method": "session/update", "params": {"sessionId": "trace-demo-session", "update": {"sessionUpdate": "tool_call_update", "toolCallId": "call-test-first", "status": "failed", "rawOutput": {"exit_code": 1, "stdout": "Expected 200; received 201"}}}}

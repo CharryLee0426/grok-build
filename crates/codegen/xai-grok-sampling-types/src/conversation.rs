@@ -1441,6 +1441,29 @@ pub fn synthesized_reasoning_item(text: impl Into<String>) -> rs::ReasoningItem 
     }
 }
 
+// Provider envelopes use a reserved ID so they cannot be replayed as native
+// OpenAI encrypted reasoning or Anthropic signatures after switching providers.
+const OPENROUTER_REASONING_ID: &str = "grok_openrouter_reasoning_v1";
+
+/// Preserve OpenRouter's complete signed/encrypted reasoning blocks in persisted
+/// conversation history while keeping the readable summary available to the UI.
+pub fn openrouter_reasoning_item(
+    text: String,
+    details: Vec<serde_json::Value>,
+) -> rs::ReasoningItem {
+    let mut item = synthesized_reasoning_item(text);
+    item.id = OPENROUTER_REASONING_ID.into();
+    item.encrypted_content = Some(serde_json::Value::Array(details).to_string());
+    item
+}
+
+pub fn openrouter_reasoning_details(item: &rs::ReasoningItem) -> Option<Vec<serde_json::Value>> {
+    if item.id != OPENROUTER_REASONING_ID {
+        return None;
+    }
+    serde_json::from_str(item.encrypted_content.as_deref()?).ok()
+}
+
 /// Splice a streaming-fallback reasoning text into a `Vec<ConversationItem>` produced by `response_to_conversation_items`.
 /// If any existing `Reasoning` sibling already carries text, leave `items` untouched (the deltas are redundant); Otherwise, if there is a `Reasoning` sibling with no text, append a `SummaryText` part to it (avoids introducing a phantom sibling); Otherwise, insert a new `Reasoning(synthesized_reasoning_item(text))` immediately before the trailing `Assistant`.
 pub fn inject_streaming_reasoning_fallback(items: &mut Vec<ConversationItem>, text: String) {
@@ -2268,15 +2291,17 @@ mod tests {
             crate::ApiBackend::ChatCompletions,
             crate::ApiBackend::Responses,
             crate::ApiBackend::Messages,
+            crate::ApiBackend::OpenRouter,
+            crate::ApiBackend::OpenAiCodex,
         ] {
             let on_wire = match backend {
-                crate::ApiBackend::Responses => {
+                crate::ApiBackend::Responses | crate::ApiBackend::OpenAiCodex => {
                     rs::CreateResponse::from(&request())
                         .prompt_cache_key
                         .as_deref()
                         == Some("cache-key-1")
                 }
-                crate::ApiBackend::ChatCompletions => {
+                crate::ApiBackend::ChatCompletions | crate::ApiBackend::OpenRouter => {
                     let mapped = ChatCompletionRequest::from(request());
                     serde_json::to_value(&mapped)
                         .expect("chat request serializes")

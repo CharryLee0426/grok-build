@@ -3,6 +3,22 @@ use clap::{ArgAction, Parser, Subcommand, ValueHint};
 use clap_complete::Shell;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum LoginProvider {
+    Openrouter,
+    #[value(name = "openai-codex", alias = "codex")]
+    OpenAiCodex,
+}
+
+impl LoginProvider {
+    pub fn provider(self) -> xai_grok_login::provider_auth::ModelProvider {
+        match self {
+            Self::Openrouter => xai_grok_login::provider_auth::ModelProvider::OpenRouter,
+            Self::OpenAiCodex => xai_grok_login::provider_auth::ModelProvider::OpenAiCodex,
+        }
+    }
+}
 /// Top-level commands for the pager binary.
 #[derive(Debug, Clone, Subcommand)]
 pub enum Command {
@@ -19,9 +35,19 @@ pub enum Command {
     /// Manage running leader processes
     Leader(LeaderMgmtArgs),
     /// Sign out and clear cached credentials
-    Logout,
-    /// Sign in to Grok
+    Logout {
+        /// Provider to sign out from; omit for Grok.
+        #[arg(value_enum)]
+        provider: Option<LoginProvider>,
+    },
+    /// Sign in to Grok, OpenRouter, or a ChatGPT Codex subscription
     Login {
+        /// Provider to sign in to; omit for Grok.
+        #[arg(value_enum)]
+        provider: Option<LoginProvider>,
+        /// Read an OpenRouter API key from stdin instead of opening OAuth.
+        #[arg(long, requires = "provider", conflicts_with_all = ["oauth", "device_auth"])]
+        with_api_key: bool,
         /// Ignored (kept for backwards compatibility). OAuth2 is now the only auth method.
         #[arg(long, hide = true)]
         legacy: bool,
@@ -47,7 +73,11 @@ pub enum Command {
     /// Manage cross-session memory
     Memory(crate::memory_cmd::MemoryArgs),
     /// List available models and exit
-    Models,
+    Models {
+        /// Fetch the newest OpenRouter catalog immediately, bypassing its cache TTL.
+        #[arg(long)]
+        refresh: bool,
+    },
     /// List, search, or restore sessions
     Sessions(crate::sessions_cmd::SessionsArgs),
     /// Print persisted token and cost usage for a session
@@ -83,7 +113,7 @@ See ~/.grok/README.md for more information.
     Wrap(WrapArgs),
     /// Export a session transcript as Markdown
     Export(crate::export_cmd::ExportArgs),
-    /// Export or upload session trace data
+    /// Explore, export, or upload session trace data
     Trace(crate::trace_cmd::TraceArgs),
     /// Check for updates or install a specific version
     Update {
@@ -1389,8 +1419,43 @@ mod tests {
     #[test]
     fn subcommand_takes_precedence_over_positional_prompt() {
         let args = PagerArgs::try_parse_from(["grok", "logout"]).expect("subcommand parses");
-        assert!(matches!(args.command, Some(Command::Logout)));
+        assert!(matches!(
+            args.command,
+            Some(Command::Logout { provider: None })
+        ));
         assert!(args.prompt.is_none());
+    }
+    #[test]
+    fn provider_auth_commands_parse() {
+        for (name, expected) in [
+            ("openrouter", LoginProvider::Openrouter),
+            ("openai-codex", LoginProvider::OpenAiCodex),
+            ("codex", LoginProvider::OpenAiCodex),
+        ] {
+            let args = PagerArgs::try_parse_from(["grok", "login", name]).unwrap();
+            assert!(
+                matches!(args.command, Some(Command::Login { provider: Some(p), with_api_key: false, .. }) if p == expected)
+            );
+            let args = PagerArgs::try_parse_from(["grok", "logout", name]).unwrap();
+            assert!(
+                matches!(args.command, Some(Command::Logout { provider: Some(p) }) if p == expected)
+            );
+        }
+        let args =
+            PagerArgs::try_parse_from(["grok", "login", "openrouter", "--with-api-key"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Login {
+                with_api_key: true,
+                ..
+            })
+        ));
+        assert!(PagerArgs::try_parse_from(["grok", "login", "--with-api-key"]).is_err());
+        let args = PagerArgs::try_parse_from(["grok", "models", "--refresh"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Command::Models { refresh: true })
+        ));
     }
     #[test]
     fn usage_command_parses_session_and_optional_turn() {

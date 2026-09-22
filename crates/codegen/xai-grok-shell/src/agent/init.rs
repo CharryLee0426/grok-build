@@ -109,6 +109,7 @@ pub fn bootstrap_with_cancel(
 ) -> Result<(AgentConfig, ModelsManager), BootstrapError> {
     let _permit = acquire_bootstrap_gate(cancel)?;
     ensure_bootstrap_not_cancelled(cancel)?;
+    let provider_catalog_warmed = boot.is_some();
     let (boot_wait, boot_models) = match boot {
         Some(b) => (b.settings_wait, Some(b.models)),
         None => (None, None),
@@ -178,9 +179,13 @@ pub fn bootstrap_with_cancel(
         if cancel.is_cancelled() {
             return Err(BootstrapError::Cancelled);
         }
+        if !provider_catalog_warmed {
+            super::builtin_providers::warm_catalog_blocking(&cfg);
+        }
         ModelsManager::from_config(&cfg, prefetched, auth_manager.clone())?
     };
     models_manager.start_auth_refresh_watcher(auth_manager.refresh_notifier());
+    models_manager.start_provider_refresh_watcher();
     Ok((cfg, models_manager))
 }
 /// Prints the error to the user's real stderr (undoing any TUI redirect) and exits.
@@ -228,7 +233,7 @@ pub async fn resolve_boot_startup_settings(
     let need_settings = cfg.remote_settings.is_none();
     let query =
         need_settings.then(|| settings_get::SettingsQuery::from_config(cfg, warmed_auth.clone()));
-    let (wait, models) = tokio::join!(
+    let (wait, models, ()) = tokio::join!(
         async {
             match query {
                 Some(query) => {
@@ -241,6 +246,12 @@ pub async fn resolve_boot_startup_settings(
             match models_load {
                 Some(load) => load.join(cancel, crate::http::STARTUP_FETCH_TIMEOUT).await,
                 None => None,
+            }
+        },
+        async {
+            tokio::select! {
+                _ = cancel.cancelled() => {},
+                _ = super::builtin_providers::warm_catalog(cfg) => {},
             }
         },
     );

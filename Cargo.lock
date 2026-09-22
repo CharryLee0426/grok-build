@@ -14056,8 +14056,13 @@ dependencies = [
 name = "xai-grok-models"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "reqwest 0.12.24",
  "serde",
  "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -14386,6 +14391,7 @@ dependencies = [
  "async-stream",
  "axum",
  "axum-server",
+ "base64 0.22.1",
  "blake3",
  "chrono",
  "eventsource-stream",

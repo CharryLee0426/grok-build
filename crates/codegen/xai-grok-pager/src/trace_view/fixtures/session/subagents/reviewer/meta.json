@@ -1,0 +1,15 @@
+{
+  "subagent_id": "reviewer",
+  "parent_session_id": "trace-demo-session",
+  "child_session_id": "trace-demo-review",
+  "subagent_type": "reviewer",
+  "description": "Check the HTTP contract and regression risk",
+  "prompt": "Review the health-check status fix.",
+  "status": "completed",
+  "started_at": "2026-09-21T10:00:10Z",
+  "completed_at": "2026-09-21T10:00:24Z",
+  "duration_ms": 14000,
+  "tool_calls": 2,
+  "turns": 1,
+  "effective_model_id": "grok-code-fast-1"
+}

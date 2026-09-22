@@ -11,6 +11,7 @@ pub(crate) async fn handle(
     agent: &MvpAgent,
     _args: &acp::ExtRequest,
 ) -> Result<acp::ExtResponse, acp::Error> {
+    agent.models_manager.refresh_provider_catalog().await;
     let state = if crate::agent::chat_modes::process_chat_mode_enabled() {
         agent.chat_modes.model_state().await
     } else {

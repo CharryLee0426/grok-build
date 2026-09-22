@@ -24,6 +24,8 @@ pub struct AuthProviderRef {
     /// [`AuthProviderRef::attach_trusted_config`] flips it by joining the shared slot for its name.
     resolved: bool,
     fail_closed: bool,
+    /// Local-only capability: never reconstructed from a serialized provider name.
+    builtin: Option<crate::provider_auth::ModelProvider>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -63,6 +65,7 @@ impl AuthProviderRef {
             slot,
             resolved: true,
             fail_closed: false,
+            builtin: None,
         }
     }
 
@@ -74,6 +77,7 @@ impl AuthProviderRef {
             slot: ProviderSlot::default(),
             resolved: false,
             fail_closed: false,
+            builtin: None,
         }
     }
 
@@ -84,6 +88,7 @@ impl AuthProviderRef {
             slot: ProviderSlot::default(),
             resolved: true,
             fail_closed: true,
+            builtin: None,
         }
     }
 
@@ -91,10 +96,27 @@ impl AuthProviderRef {
         self.fail_closed
     }
 
+    /// Construct only when resolving a locally trusted built-in provider model.
+    /// Serialized refs deliberately lose this capability and must be resolved again.
+    pub fn builtin(provider: crate::provider_auth::ModelProvider) -> Self {
+        Self {
+            name: provider.as_str().to_owned(),
+            config: AuthProviderConfig::default(),
+            slot: ProviderSlot::default(),
+            resolved: true,
+            fail_closed: false,
+            builtin: Some(provider),
+        }
+    }
+
+    pub fn builtin_provider(&self) -> Option<crate::provider_auth::ModelProvider> {
+        self.builtin
+    }
+
     /// Re-attach the trusted config for this name at model resolution; `None` means the table was removed, leaving an unusable config.
     /// The ref becomes authoritative, joins the shared slot for its name, and may mint.
     pub fn attach_trusted_config(&mut self, config: Option<&AuthProviderConfig>) {
-        if self.fail_closed {
+        if self.fail_closed || self.builtin.is_some() {
             return;
         }
         self.config = config.cloned().unwrap_or_default();
@@ -106,7 +128,7 @@ impl AuthProviderRef {
 /// Ignores the slot; a deserialized ref compares unequal until resolution re-attaches its config.
 impl PartialEq for AuthProviderRef {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.config == other.config
+        self.name == other.name && self.config == other.config && self.builtin == other.builtin
     }
 }
 
@@ -118,6 +140,7 @@ impl std::fmt::Debug for AuthProviderRef {
             .field("name", &self.name)
             .field("config", &self.config)
             .field("resolved", &self.resolved)
+            .field("builtin", &self.builtin)
             .finish_non_exhaustive()
     }
 }
@@ -446,6 +469,16 @@ impl AuthProviderRef {
     /// `None` for an unresolved ref, a cold or stale cache, or a mint in progress.
     /// Minting happens pre-turn via [`AuthProviderRef::ensure_fresh_token`].
     pub fn cached_token(&self) -> Option<String> {
+        if let Some(provider) = self.builtin {
+            return crate::provider_auth::read_provider_credential(
+                &xai_grok_config::grok_home(),
+                provider,
+            )
+            .ok()
+            .flatten()
+            .filter(|credential| !credential.is_expired_or_near())
+            .map(|credential| credential.access_token().to_owned());
+        }
         if !self.resolved {
             return None;
         }
@@ -470,6 +503,26 @@ impl AuthProviderRef {
     /// Serves the fresh cached token when chat-state lags behind a rotation; mints when the cache is cold or stale.
     /// Mints or rotates a bearer; unrelated to an OAuth refresh token.
     pub async fn ensure_fresh_token(&self, current_key: Option<&str>) -> ProviderRefreshOutcome {
+        if let Some(provider) = self.builtin {
+            return match crate::provider_auth::load_provider_credential(
+                &xai_grok_config::grok_home(),
+                provider,
+            )
+            .await
+            {
+                Ok(Some(credential)) if current_key == Some(credential.access_token()) => {
+                    ProviderRefreshOutcome::Unchanged
+                }
+                Ok(Some(credential)) => {
+                    ProviderRefreshOutcome::Rotated(credential.access_token().to_owned())
+                }
+                Ok(None) => ProviderRefreshOutcome::Unusable,
+                Err(error) => {
+                    tracing::warn!(%provider, %error, "provider credential refresh failed");
+                    ProviderRefreshOutcome::MintFailed
+                }
+            };
+        }
         let Some(mut slot) = self.locked_slot().await else {
             return ProviderRefreshOutcome::Unusable;
         };
@@ -503,6 +556,23 @@ impl AuthProviderRef {
     /// A fresher cached token is adopted without a re-run; otherwise the command runs once.
     /// `None` for a token minted moments ago under the current table (the fresh-mint guard, which an edited table bypasses).
     pub async fn recover_rejected_token(&self, rejected_key: &str) -> Option<String> {
+        if let Some(provider) = self.builtin {
+            return match crate::provider_auth::recover_provider_credential(
+                &xai_grok_config::grok_home(),
+                provider,
+                rejected_key,
+            )
+            .await
+            {
+                Ok(credential) => credential
+                    .filter(|credential| credential.access_token() != rejected_key)
+                    .map(|credential| credential.access_token().to_owned()),
+                Err(error) => {
+                    tracing::warn!(%provider, %error, "provider rejected-token refresh failed");
+                    None
+                }
+            };
+        }
         let mut slot = self.locked_slot().await?;
         if let Some(ref minted) = *slot {
             if minted.token != rejected_key && !minted_token_is_stale(minted, &self.config) {

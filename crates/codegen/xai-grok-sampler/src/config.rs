@@ -102,6 +102,10 @@ pub struct SamplerConfig {
     #[serde(default)]
     pub supports_backend_search: bool,
 
+    /// OpenRouter model catalog capability; `None` preserves provider defaults.
+    #[serde(default)]
+    pub supports_tools: Option<bool>,
+
     /// Per-model config for the `x-compactions-remaining` header; `None` disables it.
     #[serde(default)]
     pub compactions_remaining: Option<CompactionsRemaining>,
@@ -155,6 +159,7 @@ impl Default for SamplerConfig {
             attribution_callback: None,
             bearer_resolver: None,
             supports_backend_search: false,
+            supports_tools: None,
             compactions_remaining: None,
             compaction_at_tokens: None,
             doom_loop_recovery: None,

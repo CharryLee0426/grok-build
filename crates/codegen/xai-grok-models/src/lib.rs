@@ -7,6 +7,8 @@
 
 use std::sync::LazyLock;
 
+pub mod openrouter;
+
 /// The raw JSON, embedded at compile time.
 /// It is `pub` because `xai_grok_shell::models` re-exports it and `agent::config` reads it.
 pub const DEFAULT_MODELS_JSON: &str = include_str!("../default_models.json");
