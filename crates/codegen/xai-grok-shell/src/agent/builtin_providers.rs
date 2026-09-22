@@ -15,6 +15,26 @@ use super::model_providers::ModelProviderConfig;
 pub use xai_grok_models::openrouter::OPENROUTER_BASE_URL;
 pub const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
+/// Offer personal provider setup only when no existing auth or model choice applies.
+pub fn needs_provider_setup(cfg: &Config) -> bool {
+    let auth = &cfg.grok_com_config;
+    if auth.api_key_auth_disabled()
+        || auth.preferred_method.is_some()
+        || auth.oidc.is_some()
+        || auth.auth_provider_command.is_some()
+        || auth.force_login_team_uuid.is_some()
+        || cfg.endpoints.deployment_key.is_some()
+        || cfg.default_model_override.is_some()
+        || cfg.models.default.is_some()
+        || std::env::var("GROK_DEFAULT_MODEL").is_ok()
+        || cfg.create_auth_manager().current_or_expired().is_some()
+    {
+        return false;
+    }
+    let models = super::config::resolve_model_list(cfg, None);
+    !super::auth_method::should_advertise_xai_api_key(false, models.values())
+}
+
 pub fn openrouter_cache_path() -> PathBuf {
     xai_grok_config::grok_home().join("openrouter-models.json")
 }
@@ -369,6 +389,26 @@ mod tests {
         router.api_key = Some("sk-openrouter-fixture".into());
         catalog.insert("openrouter/openrouter/auto".into(), router);
         catalog
+    }
+
+    #[test]
+    #[serial]
+    fn first_run_setup_respects_credentials_and_auth_policy() {
+        let _env = isolate_default_env();
+        let home = tempfile::tempdir().unwrap();
+        let _home = EnvGuard::set("GROK_HOME", home.path().to_str().unwrap());
+        let _router = EnvGuard::unset("OPENROUTER_API_KEY");
+        assert!(needs_provider_setup(&config("")));
+        {
+            let _key = EnvGuard::set("OPENROUTER_API_KEY", "fixture");
+            assert!(!needs_provider_setup(&config("")));
+        }
+        let mut cfg = config("");
+        cfg.grok_com_config.disable_api_key_auth = Some(true);
+        assert!(!needs_provider_setup(&cfg));
+        cfg.grok_com_config.disable_api_key_auth = None;
+        cfg.models.default = Some("explicit-model".into());
+        assert!(!needs_provider_setup(&cfg));
     }
 
     #[test]

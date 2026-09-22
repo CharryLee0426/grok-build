@@ -2548,6 +2548,9 @@ async fn async_main(mut args: PagerArgs) -> Result<()> {
     }
     enforce_version_policy_or_exit();
     let _otel_guard = xai_grok_telemetry::otel_layer::otel_guard();
+    if args.model.is_none() {
+        provider_login::first_run_setup().await?;
+    }
     type UpdateWaitHandle = tokio::task::JoinHandle<std::io::Result<std::process::ExitStatus>>;
     let bg_update_wait: std::sync::Arc<tokio::sync::Mutex<Option<UpdateWaitHandle>>> =
         std::sync::Arc::new(tokio::sync::Mutex::new(None));

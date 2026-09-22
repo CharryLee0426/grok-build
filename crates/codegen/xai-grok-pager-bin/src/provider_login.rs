@@ -4,6 +4,38 @@ use tokio::io::AsyncReadExt;
 use xai_grok_login::provider_auth::{self, ModelProvider};
 use xai_grok_pager::app::cli::LoginProvider;
 
+/// Run before raw-mode startup so first-time users can choose their provider.
+pub async fn first_run_setup() -> Result<()> {
+    use std::io::{IsTerminal, Write};
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        return Ok(());
+    }
+    let cfg = xai_grok_shell::config::load_agent_config_disk_only().map_err(anyhow::Error::msg)?;
+    if !xai_grok_shell::agent::builtin_providers::needs_provider_setup(&cfg) {
+        return Ok(());
+    }
+    eprintln!("Welcome to Grok. Choose a provider to sign in:");
+    eprintln!("  1. OpenAI Codex (ChatGPT subscription)");
+    eprintln!("  2. OpenRouter");
+    eprintln!("  3. xAI / Grok");
+    loop {
+        eprint!("Provider [1-3], or q to quit: ");
+        std::io::stderr().flush()?;
+        let mut input = String::new();
+        ensure!(
+            std::io::stdin().read_line(&mut input)? > 0,
+            "Provider setup cancelled"
+        );
+        match input.trim() {
+            "1" => return login(LoginProvider::OpenAiCodex, false).await,
+            "2" => return login(LoginProvider::Openrouter, false).await,
+            "3" => return Ok(()),
+            "q" | "Q" => anyhow::bail!("Provider setup cancelled"),
+            _ => eprintln!("Enter 1, 2, 3, or q."),
+        }
+    }
+}
+
 pub async fn login(provider: LoginProvider, with_api_key: bool) -> Result<()> {
     let provider = provider.provider();
     let home = xai_grok_config::grok_home();
