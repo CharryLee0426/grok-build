@@ -18,6 +18,7 @@ Protocol (ACP).
 
 [Installing the released binary](#installing-the-released-binary) ·
 [Building from source](#building-from-source) ·
+[macOS desktop app](#macos-desktop-app) ·
 [Documentation](#documentation) ·
 [Repository layout](#repository-layout) ·
 [Development](#development) ·
@@ -85,6 +86,26 @@ is not required for OpenRouter or Codex. You can also sign in directly with
 `grok login openrouter` or `grok login openai-codex` — see the
 [authentication guide](crates/codegen/xai-grok-pager/docs/user-guide/02-authentication.md).
 
+## macOS desktop app
+
+[Grok Desktop](desktop/macOS/README.md) is a native SwiftUI client for macOS 14+
+with project and task navigation, streaming conversations, tool approvals,
+saved harness sessions, and a Git changes inspector. It uses this repository's
+Grok harness through ACP and shares the CLI's provider credentials and configuration.
+
+After building the release harness above, package and launch the desktop app:
+
+```sh
+./desktop/macOS/scripts/build-app.sh
+open "desktop/macOS/dist/Grok Desktop.app"
+```
+
+The script embeds `target/release/xai-grok-pager` when present. It requires Swift
+5.9+ and a macOS 14+ SDK; the desktop package has no external Swift dependencies.
+See the [desktop guide](desktop/macOS/README.md) for development builds,
+shortcuts, executable selection, and local data storage. The app is ad hoc signed
+for local use and does not include an automatic updater.
+
 ## Documentation
 
 Full online documentation is available at
@@ -107,6 +128,7 @@ MCP servers, skills, plugins, hooks, headless mode, sandboxing, and more.
 | `crates/codegen/...` | The rest of the CLI crate closure (config, MCP, markdown, sandbox, ...) |
 | `crates/common/`, `crates/build/`, `prod/mc/` | Small shared leaf crates pulled in by the closure |
 | `third_party/` | Vendored upstream source (Mermaid diagram stack) — see below |
+| `desktop/macOS/` | Native SwiftUI desktop client, ACP transport, tests, and app packaging |
 
 > [!IMPORTANT]
 > The root `Cargo.toml` (workspace members, dependency versions, lints,

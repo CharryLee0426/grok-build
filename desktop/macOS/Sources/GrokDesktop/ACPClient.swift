@@ -1,0 +1,338 @@
+import Foundation
+import Darwin
+
+enum ACPClientError: LocalizedError {
+    case notRunning
+    case timedOut(String)
+    case disconnected(String)
+    case invalidMessage(String)
+    case remote(code: Int, message: String, data: Any?)
+
+    var errorDescription: String? {
+        switch self {
+        case .notRunning: return "The Grok harness is not running."
+        case .timedOut(let method): return "Grok did not respond to \(method) in time."
+        case .disconnected(let reason), .invalidMessage(let reason): return reason
+        case .remote(_, let message, _): return message
+        }
+    }
+}
+
+/// A newline-delimited JSON-RPC connection to `grok agent stdio`.
+/// All callbacks and request completions are delivered on the main actor; pipe I/O is not.
+@MainActor
+final class ACPClient {
+    var onNotification: ((String, [String: Any]) -> Void)?
+    var onRequest: ((Any, String, [String: Any]) -> Void)?
+    var onDisconnect: ((String) -> Void)?
+    var onLog: ((String) -> Void)?
+
+    private struct PendingRequest {
+        let continuation: CheckedContinuation<[String: Any], Error>
+        let timeout: Task<Void, Never>?
+    }
+
+    private final class Connection: @unchecked Sendable {
+        let id = UUID()
+        let process = Process()
+        let input = Pipe()
+        let output = Pipe()
+        let errors = Pipe()
+        let writer = DispatchQueue(label: "ai.grok.desktop.acp.stdin", qos: .userInitiated)
+        var stdoutFinished = false
+        var stderrFinished = false
+        var exitStatus: Int32?
+        var stderrTail = Data()
+
+        func closeInput() {
+            writer.async { [input] in try? input.fileHandleForWriting.close() }
+        }
+
+        func terminate() {
+            closeInput()
+            guard process.isRunning else { return }
+            process.terminate()
+            // A stuck harness must not leave pipe workers or an orphan child behind.
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) { [process] in
+                if process.isRunning { Darwin.kill(process.processIdentifier, SIGKILL) }
+            }
+        }
+    }
+
+    private var connection: Connection?
+    private var nextID = 0
+    private var pending: [String: PendingRequest] = [:]
+    nonisolated private static let maximumFrameBytes = 16 * 1024 * 1024
+    nonisolated private static let maximumStderrBytes = 16 * 1024
+
+    var isRunning: Bool { connection?.process.isRunning == true }
+
+    deinit { connection?.terminate() }
+
+    func start(executable: String, cwd: String, arguments: [String] = ["agent", "stdio"]) throws {
+        stop()
+        let newConnection = Connection()
+        let process = newConnection.process
+        process.executableURL = URL(fileURLWithPath: (executable as NSString).expandingTildeInPath)
+        process.currentDirectoryURL = URL(fileURLWithPath: (cwd as NSString).expandingTildeInPath, isDirectory: true)
+        process.arguments = arguments
+        var environment = ProcessInfo.processInfo.environment
+        let inheritedPath = environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        let extraPaths = ["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.cargo/bin", NSHomeDirectory() + "/.local/bin"]
+        environment["PATH"] = (inheritedPath.split(separator: ":").map(String.init) + extraPaths)
+            .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
+            .joined(separator: ":")
+        process.environment = environment
+        process.standardInput = newConnection.input
+        process.standardOutput = newConnection.output
+        process.standardError = newConnection.errors
+        let connectionID = newConnection.id
+        process.terminationHandler = { [weak self] process in
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.connection?.id == connectionID else { return }
+                self.connection?.exitStatus = process.terminationStatus
+                self.finishIfDrained(connectionID)
+            }
+        }
+        connection = newConnection
+        do {
+            // Turn a closed child stdin into a write error instead of terminating the app.
+            guard Darwin.fcntl(newConnection.input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            try process.run()
+        } catch {
+            connection = nil
+            newConnection.closeInput()
+            try? newConnection.output.fileHandleForReading.close()
+            try? newConnection.errors.fileHandleForReading.close()
+            throw error
+        }
+        readStdout(newConnection)
+        readStderr(newConnection)
+    }
+
+    /// Use `timeout: nil` for long-running `session/prompt` requests.
+    func request(_ method: String, params: [String: Any] = [:], timeout: TimeInterval? = 30) async throws -> [String: Any] {
+        try Task.checkCancellation()
+        guard let connection, connection.process.isRunning else { throw ACPClientError.notRunning }
+        nextID += 1
+        let id = nextID
+        let key = String(id)
+        let connectionID = connection.id
+        let bytes = try encode(["jsonrpc": "2.0", "id": id, "method": method, "params": params])
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let timeoutTask: Task<Void, Never>? = timeout.map { seconds in
+                    Task { [weak self] in
+                        do {
+                            let nanoseconds = UInt64(max(0, min(seconds, 86_400)) * 1_000_000_000)
+                            try await Task.sleep(nanoseconds: nanoseconds)
+                            self?.complete(key, connectionID: connectionID, result: .failure(ACPClientError.timedOut(method)))
+                        } catch { /* The response or cancellation already completed this request. */ }
+                    }
+                }
+                pending[key] = PendingRequest(continuation: continuation, timeout: timeoutTask)
+                write(bytes, to: connection)
+            }
+        } onCancel: { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.complete(key, connectionID: connectionID, result: .failure(CancellationError()))
+            }
+        }
+    }
+
+    func notify(_ method: String, params: [String: Any] = [:]) throws {
+        try send(["jsonrpc": "2.0", "method": method, "params": params])
+    }
+
+    func respond(id: Any, result: [String: Any]) throws {
+        try send(["jsonrpc": "2.0", "id": id, "result": result])
+    }
+
+    func respondError(id: Any, code: Int, message: String) throws {
+        try send(["jsonrpc": "2.0", "id": id, "error": ["code": code, "message": message]])
+    }
+
+    func stop() {
+        let previous = connection
+        connection = nil
+        failPending(ACPClientError.disconnected("The Grok connection was closed."))
+        previous?.terminate()
+    }
+
+    private func encode(_ message: [String: Any]) throws -> Data {
+        guard JSONSerialization.isValidJSONObject(message) else {
+            throw ACPClientError.invalidMessage("The ACP message could not be encoded as JSON.")
+        }
+        var bytes = try JSONSerialization.data(withJSONObject: message, options: [.sortedKeys, .withoutEscapingSlashes])
+        bytes.append(0x0A)
+        return bytes
+    }
+
+    private func send(_ message: [String: Any]) throws {
+        guard let connection, connection.process.isRunning else { throw ACPClientError.notRunning }
+        write(try encode(message), to: connection)
+    }
+
+    private func write(_ bytes: Data, to connection: Connection) {
+        connection.writer.async { [weak self, connection] in
+            do {
+                try connection.input.fileHandleForWriting.write(contentsOf: bytes)
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    self?.disconnect(connection.id, reason: "Could not write to the Grok harness: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func readStdout(_ connection: Connection) {
+        DispatchQueue(label: "ai.grok.desktop.acp.stdout", qos: .userInitiated).async { [weak self, connection] in
+            let handle = connection.output.fileHandleForReading
+            defer { try? handle.close() }
+            var buffer = Data()
+            do {
+                while let chunk = try Self.readChunk(from: handle, limit: 64 * 1024) {
+                    buffer.append(chunk)
+                    while let newline = buffer.firstIndex(of: 0x0A) {
+                        let line = Data(buffer[..<newline])
+                        buffer.removeSubrange(...newline)
+                        if line.allSatisfy({ $0 == 0x0D || $0 == 0x20 || $0 == 0x09 }) { continue }
+                        let message = try Self.decode(line)
+                        DispatchQueue.main.async { [weak self] in self?.receive(message, connectionID: connection.id) }
+                    }
+                    guard buffer.count <= Self.maximumFrameBytes else {
+                        throw ACPClientError.invalidMessage("The Grok harness sent an ACP message larger than 16 MB.")
+                    }
+                }
+                if !buffer.isEmpty {
+                    let message = try Self.decode(buffer)
+                    DispatchQueue.main.async { [weak self] in self?.receive(message, connectionID: connection.id) }
+                }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self, self.connection?.id == connection.id else { return }
+                    connection.stdoutFinished = true
+                    self.finishIfDrained(connection.id)
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in self?.disconnect(connection.id, reason: error.localizedDescription) }
+            }
+        }
+    }
+
+    nonisolated private static func decode(_ line: Data) throws -> [String: Any] {
+        guard line.count <= maximumFrameBytes else {
+            throw ACPClientError.invalidMessage("The Grok harness sent an ACP message larger than 16 MB.")
+        }
+        do {
+            guard let message = try JSONSerialization.jsonObject(with: line) as? [String: Any],
+                  message["jsonrpc"] as? String == "2.0" else {
+                throw ACPClientError.invalidMessage("The Grok harness sent an invalid JSON-RPC message.")
+            }
+            return message
+        } catch let error as ACPClientError { throw error }
+        catch { throw ACPClientError.invalidMessage("The Grok harness sent malformed JSON on its ACP output.") }
+    }
+
+    nonisolated private static func readChunk(from handle: FileHandle, limit: Int) throws -> Data? {
+        // Foundation's read(upToCount:) can wait to fill the requested length on macOS.
+        // A direct pipe read returns as soon as bytes arrive, which is essential for ACP streaming.
+        var bytes = [UInt8](repeating: 0, count: limit)
+        while true {
+            let count = bytes.withUnsafeMutableBytes { Darwin.read(handle.fileDescriptor, $0.baseAddress, $0.count) }
+            if count > 0 { return Data(bytes.prefix(count)) }
+            if count == 0 { return nil }
+            if errno == EINTR { continue }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+
+    private func readStderr(_ connection: Connection) {
+        DispatchQueue(label: "ai.grok.desktop.acp.stderr", qos: .utility).async { [weak self, connection] in
+            let handle = connection.errors.fileHandleForReading
+            defer { try? handle.close() }
+            do {
+                while let chunk = try Self.readChunk(from: handle, limit: 8 * 1024) {
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.connection?.id == connection.id else { return }
+                        connection.stderrTail.append(chunk)
+                        if connection.stderrTail.count > Self.maximumStderrBytes {
+                            connection.stderrTail = Data(connection.stderrTail.suffix(Self.maximumStderrBytes))
+                        }
+                        self.onLog?(String(decoding: chunk, as: UTF8.self))
+                    }
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard self?.connection?.id == connection.id else { return }
+                    self?.onLog?("Could not read Grok stderr: \(error.localizedDescription)")
+                }
+            }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.connection?.id == connection.id else { return }
+                connection.stderrFinished = true
+                self.finishIfDrained(connection.id)
+            }
+        }
+    }
+
+    private func receive(_ message: [String: Any], connectionID: UUID) {
+        guard connection?.id == connectionID else { return }
+        if let method = message["method"] as? String {
+            let params = message["params"] as? [String: Any] ?? [:]
+            if let id = message["id"], !(id is NSNull) {
+                if let onRequest { onRequest(id, method, params) }
+                else { try? respondError(id: id, code: -32601, message: "Unsupported client method: \(method)") }
+            } else {
+                onNotification?(method, params)
+            }
+            return
+        }
+        guard let id = message["id"] else { return }
+        let key = String(describing: id)
+        if let error = message["error"] as? [String: Any] {
+            complete(key, connectionID: connectionID, result: .failure(ACPClientError.remote(
+                code: (error["code"] as? NSNumber)?.intValue ?? -32603,
+                message: error["message"] as? String ?? "The Grok harness returned an error.", data: error["data"]
+            )))
+        } else if let result = message["result"] as? [String: Any] {
+            complete(key, connectionID: connectionID, result: .success(result))
+        } else if message["result"] is NSNull {
+            complete(key, connectionID: connectionID, result: .success([:]))
+        } else {
+            complete(key, connectionID: connectionID, result: .failure(ACPClientError.invalidMessage("The Grok harness returned an invalid ACP result.")))
+        }
+    }
+
+    private func complete(_ key: String, connectionID: UUID, result: Result<[String: Any], Error>) {
+        guard connection?.id == connectionID, let request = pending.removeValue(forKey: key) else { return }
+        request.timeout?.cancel()
+        request.continuation.resume(with: result)
+    }
+
+    private func failPending(_ error: Error) {
+        let requests = pending.values
+        pending.removeAll()
+        for request in requests {
+            request.timeout?.cancel()
+            request.continuation.resume(throwing: error)
+        }
+    }
+
+    private func finishIfDrained(_ connectionID: UUID) {
+        guard let connection, connection.id == connectionID,
+              connection.stdoutFinished, connection.stderrFinished, let status = connection.exitStatus else { return }
+        let stderr = String(decoding: connection.stderrTail, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        let suffix = stderr.isEmpty ? "" : "\n\(stderr)"
+        disconnect(connectionID, reason: "The Grok harness exited with status \(status).\(suffix)")
+    }
+
+    private func disconnect(_ connectionID: UUID, reason: String) {
+        guard let previous = connection, previous.id == connectionID else { return }
+        connection = nil
+        failPending(ACPClientError.disconnected(reason))
+        previous.terminate()
+        onDisconnect?(reason)
+    }
+}
