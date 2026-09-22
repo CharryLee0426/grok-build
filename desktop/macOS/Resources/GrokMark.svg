@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Local vector reconstruction of the Grok homepage mark, referenced 2026-09-22.
+  Reference: https://grok.com/ (rendered inline mark; no raster asset downloaded).
+  This is the editable source for the app icon and the native SwiftUI symbol.
+  Keep paths absolute M/L/C/Z so scripts/make-icon.swift can render them natively.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 34 34" fill="currentColor">
+  <title>Grok</title>
+  <path d="M 13.237 21.041
+    L 24.319 12.851
+    C 24.862 12.449 25.638 12.606 25.897 13.229
+    C 27.260 16.519 26.651 20.471 23.940 23.185
+    C 21.230 25.899 17.458 26.494 14.011 25.139
+    L 10.245 26.884
+    C 15.646 30.581 22.205 29.667 26.304 25.560
+    C 29.555 22.305 30.562 17.868 29.621 13.867
+    L 29.629 13.876
+    C 28.264 7.998 29.965 5.649 33.449 0.845
+    C 33.531 0.731 33.614 0.617 33.696 0.500
+    L 29.111 5.091
+    L 29.111 5.076
+    L 13.234 21.044 Z"/>
+  <path d="M 10.950 23.031
+    C 7.073 19.324 7.742 13.585 11.050 10.276
+    C 13.496 7.827 17.504 6.828 21.002 8.297
+    L 24.760 6.560
+    C 24.083 6.070 23.215 5.543 22.220 5.173
+    C 17.720 3.319 12.333 4.242 8.675 7.901
+    C 5.156 11.424 4.050 16.840 5.950 21.462
+    C 7.369 24.917 5.043 27.360 2.699 29.826
+    C 1.868 30.700 1.035 31.575 0.364 32.500
+    L 10.947 23.034 Z"/>
+</svg>
