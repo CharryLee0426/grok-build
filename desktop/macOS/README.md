@@ -24,21 +24,30 @@ frameworks. Building the Rust harness has its own requirements, documented in th
 Run these commands from the repository root:
 
 ```sh
-# Build the harness, or use an existing compatible Grok installation.
-cargo build -p xai-grok-pager-bin --release
-
-# Build a release .app and embed target/release/xai-grok-pager when available.
-./desktop/macOS/scripts/build-app.sh
+# Build the release harness and package the desktop app explicitly.
+make build-desktop
 open "desktop/macOS/dist/Grok Desktop.app"
+
+# Or build and install it to ~/Applications:
+make deploy-desktop
 ```
 
-You can move the generated app into `/Applications`. The packaging script embeds
-the release harness as `Contents/Resources/grok`, signs that executable, and then
-signs the app. To bundle a different executable:
+The repository default commands (`make`, `make build`, and `make deploy`) only
+build or install the CLI/TUI. They do not compile or install the desktop app.
+Use `make deploy-desktop DESKTOP_INSTALL_DIR=/Applications` to choose a different
+app destination, provided it is writable.
+
+The packaging script embeds the release harness as `Contents/Resources/grok`,
+signs that executable, and then signs the app. To reuse an existing harness and
+skip its Rust build:
 
 ```sh
-GROK_BINARY="/absolute/path/to/grok" ./desktop/macOS/scripts/build-app.sh
+make build-desktop GROK_BINARY="/absolute/path/to/grok"
 ```
+
+The lower-level `./desktop/macOS/scripts/build-app.sh` command remains available
+for packaging a prebuilt harness; it requires `target/release/xai-grok-pager` or
+an explicit `GROK_BINARY`.
 
 Packaging requires a harness and embeds it as the fixed application default.
 Settings does not expose an executable path, and old path preferences are ignored.

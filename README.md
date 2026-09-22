@@ -74,10 +74,20 @@ Requirements:
   and not currently tested from this tree.
 
 ```sh
+make                                       # release TUI: target/release/xai-grok-pager
+make deploy                                # build + install TUI to ~/.local/bin/grok
 cargo run -p xai-grok-pager-bin              # build + launch the TUI
-cargo build -p xai-grok-pager-bin --release  # release binary: target/release/xai-grok-pager
 cargo check -p xai-grok-pager-bin            # fast validation
 ```
+
+`make`, `make build`, and `make deploy` build only the CLI/TUI and its Rust
+runtime. Desktop compilation and installation require the explicit commands
+below. The direct Cargo equivalent of `make build` is
+`cargo build -p xai-grok-pager-bin --release`.
+
+For local deployment, put `~/.local/bin` on your `PATH`, or choose another
+destination with `make deploy BINDIR=/path/to/bin`. `CARGO_TARGET_DIR` overrides
+the build output directory. Run `make help` for all local build/deploy commands.
 
 The binary artifact is named `xai-grok-pager`; official installs ship it as
 `grok`. On first interactive launch, choose OpenAI Codex (ChatGPT subscription),
@@ -93,15 +103,21 @@ with project and task navigation, streaming conversations, tool approvals,
 saved harness sessions, and a Git changes inspector. It uses this repository's
 Grok harness through ACP and shares the CLI's provider credentials and configuration.
 
-After building the release harness above, package and launch the desktop app:
+Build and package the desktop app explicitly:
 
 ```sh
-./desktop/macOS/scripts/build-app.sh
+make build-desktop
 open "desktop/macOS/dist/Grok Desktop.app"
+
+# Or build and install it to ~/Applications:
+make deploy-desktop
 ```
 
-The script embeds `target/release/xai-grok-pager` when present. It requires Swift
-5.9+ and a macOS 14+ SDK; the desktop package has no external Swift dependencies.
+The desktop command first builds the release Rust harness and embeds it in the
+app. Set `GROK_BINARY=/path/to/grok` to reuse an existing harness and compile only
+the desktop app. `DESKTOP_INSTALL_DIR` overrides the desktop install directory.
+It requires Swift 5.9+ and a macOS 14+ SDK; the desktop package has no external
+Swift dependencies.
 See the [desktop guide](desktop/macOS/README.md) for development builds,
 shortcuts, executable selection, and local data storage. The app is ad hoc signed
 for local use and does not include an automatic updater.
