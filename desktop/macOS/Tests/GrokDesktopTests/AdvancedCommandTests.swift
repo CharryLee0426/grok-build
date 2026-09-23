@@ -43,18 +43,6 @@ final class AdvancedCommandTests: XCTestCase {
         XCTAssertNil(try SavedPlanArtifact.read(home: home.path, cwd: "/project", sessionID: sessionID))
     }
 
-    func testUsageRespectsTicksAndNeverClaimsIncompleteCostIsComplete() {
-        let complete = AdvancedCommandFormatting.usage(["inputTokens": 450, "outputTokens": 60, "costUsdTicks": 12_345_670_000])
-        XCTAssertTrue(complete.contains("Input tokens: 450"))
-        XCTAssertTrue(complete.contains("Cost: $1.234567"))
-        for flag in ["costIsPartial", "usageIsIncomplete"] {
-            let incomplete = AdvancedCommandFormatting.usage([flag: true, "costUsdTicks": 12_345_670_000])
-            XCTAssertTrue(incomplete.contains("Cost: incomplete"))
-            XCTAssertFalse(incomplete.contains("$1.234567"))
-        }
-        XCTAssertTrue(AdvancedCommandFormatting.usage([:]).contains("Cost: unavailable"))
-    }
-
     func testRewindPreviewAcceptsDryRunAndRejectsCommittedOrMismatchedResponses() throws {
         let point = RewindCheckpoint(promptIndex: 3, createdAt: "", snapshotCount: 1, hasFileChanges: true, prompt: "Edit")
         let raw: [String: Any] = ["success": false, "target_prompt_index": 3, "mode": "all", "clean_files": ["source.swift"], "conflicts": [[String: Any]]()]

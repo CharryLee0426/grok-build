@@ -162,27 +162,13 @@ extension AppStore {
     func askSideQuestion(_ question: String) {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { banner = "Use /btw <question> to ask a side question."; return }
+        // A side question is about a task's conversation; don't start an empty one for it.
+        guard state.selectedConversationID != nil else { banner = "Open a task to ask a side question about it."; return }
         Task { await loadAdvanced(title: "Side question") { client, _, session, _ in
             let result = try ExtensionResponse.unwrap(try await client.request("_x.ai/btw", params: ["sessionId": session, "question": question], timeout: nil))
             guard let answer = result["answer"] as? String else { throw DesktopError.message("The harness did not return an answer to the side question.") }
             return question + "\n\n" + answer
         } }
-    }
-
-    func showUsage() async {
-        await loadAdvanced(title: "Session usage") { client, _, session, _ in
-            let result = try ExtensionResponse.unwrap(try await client.request("_x.ai/session/usage", params: ["sessionId": session]))
-            guard let usage = result["usage"] as? [String: Any] else { throw DesktopError.message("The harness did not return session usage.") }
-            return AdvancedCommandFormatting.usage(usage)
-        }
-    }
-
-    func showTasks() async {
-        await loadAdvanced(title: "Background tasks") { client, _, session, _ in
-            let result = try ExtensionResponse.unwrap(try await client.request("_x.ai/task/list", params: ["sessionId": session]))
-            guard let tasks = result["tasks"] as? [[String: Any]] else { throw DesktopError.message("The harness did not return background tasks.") }
-            return AdvancedCommandFormatting.tasks(tasks)
-        }
     }
 
     private func loadAdvanced(title: String, operation: @escaping (ACPClient, UUID, String, Project) async throws -> String) async {
@@ -348,39 +334,5 @@ enum SavedPlanArtifact {
             return content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : content
         }
         return nil
-    }
-}
-
-enum AdvancedCommandFormatting {
-    static func usage(_ usage: [String: Any]) -> String {
-        func number(_ key: String) -> String { (usage[key] as? NSNumber)?.stringValue ?? "0" }
-        var lines = ["Input tokens: \(number("inputTokens"))", "Output tokens: \(number("outputTokens"))", "Cached input tokens: \(number("cachedReadTokens"))", "Reasoning tokens: \(number("reasoningTokens"))", "Model calls: \(number("modelCalls"))", "Turns: \(number("numTurns"))"]
-        if usage["usageIsIncomplete"] as? Bool == true || usage["costIsPartial"] as? Bool == true {
-            lines.append("Cost: incomplete; work may still be running.")
-        } else if let cost = usage["costUsdTicks"] as? NSNumber {
-            lines.append(String(format: "Cost: $%.6f", cost.doubleValue / 10_000_000_000))
-        } else { lines.append("Cost: unavailable") }
-        if let models = usage["modelUsage"] as? [String: [String: Any]], !models.isEmpty {
-            lines.append("\nBy model")
-            for name in models.keys.sorted() {
-                let value = models[name] ?? [:]
-                lines.append("\(name): \((value["inputTokens"] as? NSNumber)?.stringValue ?? "0") input / \((value["outputTokens"] as? NSNumber)?.stringValue ?? "0") output tokens")
-            }
-        }
-        lines.append("\nThese totals cover this runtime connection. Resuming in a new process resets them; grok usage <session-id> reads persisted totals.")
-        return lines.joined(separator: "\n")
-    }
-
-    static func tasks(_ tasks: [[String: Any]]) -> String {
-        guard !tasks.isEmpty else { return "No background tasks are registered for this session. Use Subagents to inspect delegated agents." }
-        return tasks.map { task in
-            let title = task["description"] as? String ?? task["display_command"] as? String ?? task["command"] as? String ?? "Task"
-            let status = task["completed"] as? Bool == true ? "Finished" : "Running"
-            var parts = [title, status + " · " + (task["task_id"] as? String ?? "")]
-            if let code = task["exit_code"] as? Int { parts.append("Exit code: \(code)") }
-            if let output = task["output"] as? String, !output.isEmpty { parts.append(String(output.prefix(32_768))) }
-            if let file = task["output_file"] as? String, !file.isEmpty { parts.append("Output file: \(file)") }
-            return parts.joined(separator: "\n")
-        }.joined(separator: "\n\n────────\n\n")
     }
 }

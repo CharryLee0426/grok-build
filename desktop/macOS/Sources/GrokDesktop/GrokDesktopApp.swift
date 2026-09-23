@@ -9,9 +9,12 @@ struct GrokDesktopApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @AppStorage("appearance") private var appearance = "system"
 
+    /// The saved theme (shared with the terminal as `[ui].theme`) applies before any window draws.
+    init() { ExtrasFeatureModel.restoreSavedTheme() }
+
     var body: some Scene {
         Window("Grok Desktop", id: "main") {
-            ContentView().environmentObject(store)
+            ContentView().desktopEnvironment(store)
                 .preferredColorScheme(appearance == "system" ? nil : appearance == "dark" ? .dark : .light)
                 .onAppear { delegate.store = store; NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true) }
         }
@@ -21,6 +24,22 @@ struct GrokDesktopApp: App {
         .windowToolbarStyle(.unified)
         .windowResizability(.contentMinSize)
         .commands { AppCommands(store: store, menu: store.menuState) }
+
+        auxiliary(.trace)
+        auxiliary(.docs)
+        auxiliary(.releaseNotes)
+        auxiliary(.transcript)
+        auxiliary(.gboom)
+        auxiliary(.tutorial)
+    }
+
+    private func auxiliary(_ window: DesktopWindow) -> some Scene {
+        Window(window.title, id: window.rawValue) {
+            window.content.desktopEnvironment(store)
+                .preferredColorScheme(appearance == "system" ? nil : appearance == "dark" ? .dark : .light)
+        }
+        .defaultSize(width: window.defaultSize.width, height: window.defaultSize.height)
+        .windowResizability(.contentMinSize)
     }
 }
 
@@ -49,6 +68,12 @@ private struct AppCommands: Commands {
             Button("Show Changes") { store.showInspector.toggle() }.keyboardShortcut("j")
             Button("Open in Terminal") { store.openTerminal() }.disabled(!menu.hasProject)
             Button("Reveal Project in Finder") { store.revealProject() }.disabled(!menu.hasProject)
+        }
+        CommandGroup(replacing: .help) {
+            Button("Grok Build Guides") { store.executeCommand(name: "docs") }
+            Button("Tutorial") { store.executeCommand(name: "tutorial") }
+            Divider()
+            Button("Keyboard Shortcuts") { store.features.extras.openKeyboardShortcuts() }.keyboardShortcut("/")
         }
         CommandMenu("Extensions") {
             Button("MCP Servers…") { store.featurePanel = .mcps }

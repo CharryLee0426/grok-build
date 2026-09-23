@@ -105,9 +105,9 @@ fixture.run()
         defer { fixture.cleanup() }
         let store = fixture.store
         await store.refreshCommands()
-        store.executeCommand(name: "context")
+        store.executeCommand(name: "fixture-echo")
         try await eventually { fixture.prompts.count == 1 && !store.run.isRunning }
-        XCTAssertEqual(fixture.prompts, ["/context"])
+        XCTAssertEqual(fixture.prompts, ["/fixture-echo"])
         store.executeCommand(name: "fixture-review", arguments: "the new command picker")
         try await eventually { fixture.prompts.count == 2 && !store.run.isRunning }
         XCTAssertEqual(fixture.prompts.last, "/fixture-review the new command picker")
@@ -120,12 +120,12 @@ fixture.run()
         try await startTask(fixture)
         let store = fixture.store
         store.draft = "Unsent follow-up"
-        store.executeCommand(name: "context")
+        store.executeCommand(name: "fixture-echo")
         try await eventually { !store.run.isRunning && fixture.prompts.count == 2 }
         XCTAssertEqual(store.draft, "Unsent follow-up")
-        XCTAssertEqual(fixture.prompts.last, "/context")
-        store.draft = "/context"
-        store.executeCommand(name: "context")
+        XCTAssertEqual(fixture.prompts.last, "/fixture-echo")
+        store.draft = "/fixture-echo"
+        store.executeCommand(name: "fixture-echo")
         try await eventually { !store.run.isRunning && fixture.prompts.count == 3 }
         XCTAssertEqual(store.draft, "")
     }
@@ -142,10 +142,10 @@ fixture.run()
         store.executeCommand(name: "fixture-fail")
         try await eventually { fixture.prompts.count == 1 && !store.run.isRunning }
         XCTAssertTrue(store.banner?.contains("command execution failed") == true)
-        store.executeCommand(name: "context")
+        store.executeCommand(name: "fixture-echo")
         try await eventually { fixture.prompts.count == 2 && !store.run.isRunning }
         XCTAssertEqual(store.run.phase, "Ready")
-        XCTAssertEqual(fixture.prompts, ["/fixture-fail", "/context"])
+        XCTAssertEqual(fixture.prompts, ["/fixture-fail", "/fixture-echo"])
     }
 
     func testUseSkillStagesQualifiedInvocationUntilExplicitSend() async throws {

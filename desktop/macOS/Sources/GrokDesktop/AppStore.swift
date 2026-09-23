@@ -19,8 +19,22 @@ final class AppStore: ObservableObject {
     @Published var search = ""
     @Published var showSearch = false
     @Published var showSettings = false
+    @Published var showRename = false
+    /// The command sheet on screen, if any.
+    @Published var sheet: DesktopSheet?
+    /// A secondary window a command asked to open; the main window opens it.
+    @Published var windowRequest: DesktopWindow?
+    /// `/minimal`: the conversation alone, without the sidebar, inspector, or toolbar.
+    @Published var minimalMode = false
+    /// What the harness reported about itself and the signed-in account.
+    @Published var harnessMeta = HarnessMeta()
+    lazy var features = DesktopFeatures(store: self)
     @Published var showInspector = false
     @Published var showArchived = false
+    /// Recents lists every project's tasks, so it starts folded each launch.
+    @Published var recentsExpanded = false
+    /// Tasks whose turn finished while another task was on screen.
+    @Published var unreadConversationIDs: Set<UUID> = []
     @Published var workspace = GitWorkspaceSnapshot(branch: "", changes: [])
     @Published var selectedFile: String?
     @Published var diffText = ""
@@ -47,35 +61,35 @@ final class AppStore: ObservableObject {
     @Published var rewindPreview: RewindPreview?
     var rewindConversationID: UUID?
     var pendingRecap: (conversationID: UUID, requestID: UUID)?
-    private var featureRequestID: UUID?
-    private var featureNotificationRefresh: Task<Void, Never>?
-    private var auxiliaryClients: [UUID: ACPClient] = [:]
-    private var pendingModes: [UUID: String] = [:]
+    var featureRequestID: UUID?
+    var featureNotificationRefresh: Task<Void, Never>?
+    var auxiliaryClients: [UUID: ACPClient] = [:]
+    var pendingModes: [UUID: String] = [:]
     private(set) var binaryPath: String = ""
-    @Published private var catalogRun = RunState()
-    private var catalogProjectID: UUID?
-    private var commandCatalogProjectID: UUID?
+    @Published var catalogRun = RunState()
+    var catalogProjectID: UUID?
+    var commandCatalogProjectID: UUID?
     private var catalogLoadingProjectID: UUID?
     private var catalogClient: ACPClient?
     private let stateFile: URL
     private let defaults: UserDefaults
-    private enum DraftLocation: Hashable {
+    enum DraftLocation: Hashable {
         case conversation(UUID)
         case newTask(UUID?)
     }
-    private var drafts: [DraftLocation: String] = [:]
-    private var draftLocation: DraftLocation {
+    var drafts: [DraftLocation: String] = [:]
+    var draftLocation: DraftLocation {
         state.selectedConversationID.map(DraftLocation.conversation) ?? .newTask(state.selectedProjectID)
     }
-    private var clients: [UUID: ACPClient] = [:]
-    private var loaded: Set<UUID> = []
-    private var replaying: Set<UUID> = []
-    private var operations: [UUID: Task<Void, Never>] = [:]
-    private var operationIDs: [UUID: UUID] = [:]
+    var clients: [UUID: ACPClient] = [:]
+    var loaded: Set<UUID> = []
+    var replaying: Set<UUID> = []
+    var operations: [UUID: Task<Void, Never>] = [:]
+    var operationIDs: [UUID: UUID] = [:]
     private var cancellationFallbacks: [UUID: Task<Void, Never>] = [:]
-    private var cancellationRequested: Set<UUID> = []
-    private var importBuffers: [UUID: [Message]] = [:]
-    private var pendingPrompts: [UUID: Message] = [:]
+    var cancellationRequested: Set<UUID> = []
+    var importBuffers: [UUID: [Message]] = [:]
+    var pendingPrompts: [UUID: Message] = [:]
     private var historyClient: ACPClient?
     private var saveTask: Task<Void, Never>?
     private var saveDeadline: Date?
@@ -105,10 +119,25 @@ final class AppStore: ObservableObject {
         }
         return catalog
     }
-    var visibleConversations: [Conversation] {
-        state.conversations.filter {
-            $0.isArchived == showArchived && (search.isEmpty ? $0.projectID == state.selectedProjectID : $0.title.localizedCaseInsensitiveContains(search))
-        }.sorted { $0.isPinned == $1.isPinned ? $0.updatedAt > $1.updatedAt : $0.isPinned }
+    /// Tasks in a project folder, most recently updated first.
+    func conversations(inProject id: UUID) -> [Conversation] {
+        Self.newestFirst(state.conversations.filter { $0.projectID == id && !$0.isArchived })
+    }
+    /// Every active task across all projects, most recently updated first.
+    var recentConversations: [Conversation] { Self.newestFirst(state.conversations.filter { !$0.isArchived }) }
+    var pinnedConversations: [Conversation] { Self.newestFirst(state.conversations.filter { $0.isPinned && !$0.isArchived }) }
+    var archivedConversations: [Conversation] { Self.newestFirst(state.conversations.filter(\.isArchived)) }
+    /// Search covers every project; the archive toggle chooses which tasks are searched.
+    var searchResults: [Conversation] {
+        Self.newestFirst(state.conversations.filter { $0.isArchived == showArchived && $0.title.localizedCaseInsensitiveContains(search) })
+    }
+    nonisolated static func newestFirst(_ tasks: [Conversation]) -> [Conversation] {
+        tasks.sorted { $0.updatedAt == $1.updatedAt ? $0.id.uuidString < $1.id.uuidString : $0.updatedAt > $1.updatedAt }
+    }
+    func isProjectExpanded(_ id: UUID) -> Bool { !state.collapsedProjectIDs.contains(id) }
+    func toggleProjectExpanded(_ id: UUID) {
+        if state.collapsedProjectIDs.remove(id) == nil { state.collapsedProjectIDs.insert(id) }
+        save()
     }
 
     init(stateFile: URL = DesktopPaths.stateFile, defaults: UserDefaults = .standard, binaryPath: String? = nil) {
@@ -214,6 +243,7 @@ final class AppStore: ObservableObject {
             selectedFile = nil; diffText = ""
         }
         state.selectedConversationID = task.id; state.selectedProjectID = task.projectID
+        unreadConversationIDs.remove(task.id)
         draft = drafts[draftLocation] ?? ""; save(); Task { await refreshWorkspace() }
     }
 
@@ -221,6 +251,11 @@ final class AppStore: ObservableObject {
         drafts[draftLocation] = draft
         state.selectedConversationID = nil
         draft = drafts[draftLocation] ?? ""; showArchived = false; save()
+    }
+    func renameConversation(_ id: UUID, title: String) {
+        let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty, let i = state.conversations.firstIndex(where: { $0.id == id }) else { return }
+        state.conversations[i].title = String(title.prefix(200)); save()
     }
     func togglePin(_ id: UUID) {
         guard let i = state.conversations.firstIndex(where: { $0.id == id }) else { return }
@@ -242,6 +277,7 @@ final class AppStore: ObservableObject {
         runs.removeValue(forKey: id)
         transcriptRevisions.removeValue(forKey: id)
         state.conversations.removeAll { $0.id == id }
+        unreadConversationIDs.remove(id)
         if state.selectedConversationID == id {
             state.selectedConversationID = nil
             draft = drafts[draftLocation] ?? ""
@@ -261,6 +297,9 @@ final class AppStore: ObservableObject {
         catalogRun.isConfiguring = true
         catalogLoadingProjectID = project.id
         let client = ACPClient()
+        client.onNotification = { [weak self] method, params in
+            self?.features.handleGlobal(method: method.hasPrefix("_") ? String(method.dropFirst()) : method, params: params)
+        }
         catalogClient?.stop(); catalogClient = client
         defer {
             client.stop()
@@ -305,21 +344,33 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func send(displayText: String? = nil, promptText: String? = nil, requiredTool: String? = nil) {
+    func send(displayText: String? = nil, promptText: String? = nil, requiredTool: String? = nil, bypassDesktopCommands: Bool = false) {
         let prompt = (displayText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let commandDraftLocation = draftLocation
-        if promptText == nil, let command = SlashCommand.split(prompt), handleDesktopCommand(command.name, arguments: command.arguments) {
-            drafts.removeValue(forKey: commandDraftLocation)
-            if draftLocation == commandDraftLocation, draft.trimmingCharacters(in: .whitespacesAndNewlines) == prompt { draft = "" }
-            return
+        if promptText == nil, !bypassDesktopCommands, let command = SlashCommand.split(prompt) {
+            // Mid-turn, native panels open at once; commands that need an idle task keep the draft.
+            let policy: DesktopCommands.TurnPolicy = run.isRunning ? DesktopCommands.turnPolicy(command.name, arguments: command.arguments) : .runNow
+            if policy == .waitForIdle {
+                banner = "Wait for the current turn to finish or stop it before running /\(command.name)."
+                return
+            }
+            if policy == .runNow, handleDesktopCommand(command.name, arguments: command.arguments) {
+                drafts.removeValue(forKey: commandDraftLocation)
+                if draftLocation == commandDraftLocation, draft.trimmingCharacters(in: .whitespacesAndNewlines) == prompt { draft = "" }
+                return
+            }
         }
         if let command = SlashCommand.split(prompt), command.name == "goal", run.isRunning,
            ["status", "pause", "resume", "clear"].contains(command.arguments) {
             draft = ""; drafts.removeValue(forKey: commandDraftLocation)
             goalAction(command.arguments); return
         }
+        if !prompt.isEmpty, run.isRunning, let id = state.selectedConversationID, features.composer.enqueue(prompt, conversationID: id) {
+            if displayText == nil { draft = ""; drafts.removeValue(forKey: commandDraftLocation) }
+            return
+        }
         guard !prompt.isEmpty, let project, !run.isRunning, !run.isConfiguring else { return }
-        if promptText == nil, let command = SlashCommand.split(prompt), run.commandsLoaded,
+        if promptText == nil, !bypassDesktopCommands, let command = SlashCommand.split(prompt), run.commandsLoaded,
            !run.commands.contains(where: { $0.name == command.name || $0.aliases.contains(command.name) }) {
             banner = "Unknown command /\(command.name). Open the command menu to see commands available in this project."
             return
@@ -334,12 +385,16 @@ final class AppStore: ObservableObject {
             state.conversations.insert(task, at: 0); id = task.id; state.selectedConversationID = task.id
         }
         guard let id else { return }
-        let optimisticPrompt = Message(kind: .user, text: prompt)
+        let optimisticPrompt = Message(kind: .user, text: prompt, createdAt: Date())
         append(optimisticPrompt, to: id)
         pendingPrompts[id] = optimisticPrompt
-        drafts.removeValue(forKey: sentDraftLocation)
-        drafts.removeValue(forKey: .conversation(id))
-        draft = ""; banner = nil
+        // Text sent from elsewhere (a dashboard reply, a media command) leaves the draft alone.
+        if displayText == nil {
+            drafts.removeValue(forKey: sentDraftLocation)
+            drafts.removeValue(forKey: .conversation(id))
+            draft = ""
+        }
+        banner = nil
         let operationID = beginOperation(id, phase: "Connecting")
         operations[id] = Task {
             defer { finishOperation(id, operationID: operationID) }
@@ -365,13 +420,16 @@ final class AppStore: ObservableObject {
                 runs[id]?.phase = stopped ? "Stopped" : "Ready"
                 runs[id]?.isRunning = false
                 if let i = state.conversations.firstIndex(where: { $0.id == id }) { state.conversations[i].updatedAt = Date() }
-                save(); await refreshWorkspace()
+                if state.selectedConversationID != id { unreadConversationIDs.insert(id) }
+                save()
+                features.composer.turnDidFinish(conversationID: id, stopped: stopped)
+                await refreshWorkspace()
             } catch {
                 guard operationIDs[id] == operationID else { return }
                 let stopped = error is CancellationError || cancellationRequested.contains(id)
                 runs[id]?.phase = stopped ? "Stopped" : "Needs attention"
                 if !stopped {
-                    append(Message(kind: .system, text: error.localizedDescription), to: id)
+                    append(Message(kind: .system, text: error.localizedDescription, createdAt: Date()), to: id)
                     if SlashCommand.split(prompt) != nil { banner = error.localizedDescription }
                 }
                 discardConnection(id)
@@ -379,7 +437,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func connect(id: UUID, project: Project, operationID: UUID) async throws -> ACPClient {
+    func connect(id: UUID, project: Project, operationID: UUID) async throws -> ACPClient {
         try checkOperation(id, operationID: operationID)
         if let client = clients[id], loaded.contains(id) {
             if let mode = pendingModes[id] {
@@ -415,6 +473,8 @@ final class AppStore: ObservableObject {
         try await authenticate(client, initial: initial)
         try checkOperation(id, operationID: operationID)
         var params: [String: Any] = ["cwd": project.path, "mcpServers": []]
+        let sessionMeta = features.composer.sessionMeta()
+        if !sessionMeta.isEmpty { params["_meta"] = sessionMeta }
         let result: [String: Any]
         if let session = task(id)?.sessionID {
             params["sessionId"] = session
@@ -436,6 +496,9 @@ final class AppStore: ObservableObject {
             if let i = state.conversations.firstIndex(where: { $0.id == id }) { state.conversations[i].sessionID = session }
         }
         try checkOperation(id, operationID: operationID)
+        if let mode = (result["_meta"] as? [String: Any])?["x.ai/memoryMode"] as? String {
+            features.extensions.memory.recordSessionMode(mode, conversationID: id)
+        }
         if let models = result["models"] as? [String: Any] { applyModels(models, id: id) }
         if let modes = result["modes"] as? [String: Any] {
             runs[id, default: RunState()].modes = (modes["availableModes"] as? [[String: Any]] ?? []).compactMap {
@@ -463,17 +526,20 @@ final class AppStore: ObservableObject {
         loaded.insert(id); persistSessionOptions(id); save(); return client
     }
 
-    private func initialize(_ client: ACPClient) async throws -> [String: Any] {
-        try await client.request("initialize", params: [
+    func initialize(_ client: ACPClient) async throws -> [String: Any] {
+        let result = try await client.request("initialize", params: [
             "protocolVersion": 1,
             "clientInfo": ["name": "grok-desktop", "title": "Grok Desktop", "version": "0.1.0"],
             "clientCapabilities": ["fs": ["readTextFile": false, "writeTextFile": false], "terminal": false,
                                    "_meta": ["x.ai/folderTrust": ["interactive": true]]],
             "_meta": ["clientType": "grok_desktop", "clientIdentifier": "grok-desktop", "clientVersion": "0.1.0", "startupHints": ["nonInteractive": false]]
         ], timeout: 60)
+        if let meta = result["_meta"] as? [String: Any] { harnessMeta.initialize = meta }
+        if let methods = result["authMethods"] as? [[String: Any]] { harnessMeta.authMethods = methods }
+        return result
     }
 
-    private func authenticate(_ client: ACPClient, initial: [String: Any]) async throws {
+    func authenticate(_ client: ACPClient, initial: [String: Any]) async throws {
         let methods = initial["authMethods"] as? [[String: Any]] ?? []
         let preferred = (initial["_meta"] as? [String: Any])?["defaultAuthMethodId"] as? String
         let offered = Set(methods.compactMap { $0["id"] as? String })
@@ -482,7 +548,8 @@ final class AppStore: ObservableObject {
         guard let method else {
             throw DesktopError.message("No supported sign-in method is available. Open Settings and sign in to xAI, OpenRouter, or OpenAI Codex, then try again.")
         }
-        _ = try await client.request("authenticate", params: ["methodId": method, "_meta": ["headless": true]], timeout: 60)
+        let result = try await client.request("authenticate", params: ["methodId": method, "_meta": ["headless": true]], timeout: 60)
+        if let meta = result["_meta"] as? [String: Any], !meta.isEmpty { harnessMeta.authenticate = meta }
     }
 
     private func receive(_ method: String, params: [String: Any], id: UUID) {
@@ -541,7 +608,8 @@ final class AppStore: ObservableObject {
             guard let updates = pendingTranscript.removeValue(forKey: id),
                   let i = state.conversations.firstIndex(where: { $0.id == id }) else { continue }
             var messages = state.conversations[i].messages
-            for update in updates { TranscriptReducer.apply(update, to: &messages) }
+            let now = Date()
+            for update in updates { TranscriptReducer.apply(update, to: &messages, date: now) }
             state.conversations[i].messages = messages
             transcriptRevisions[id, default: 0] += 1
             changed = true
@@ -553,7 +621,7 @@ final class AppStore: ObservableObject {
     /// Changes whenever the conversation's transcript does. Views compare this instead of text.
     func transcriptRevision(of id: UUID?) -> Int { id.flatMap { transcriptRevisions[$0] } ?? 0 }
 
-    private var importing: Set<UUID> = []
+    var importing: Set<UUID> = []
     private func handleRequest(_ requestID: Any, method: String, params: [String: Any], id: UUID, client: ACPClient) {
         let method = method.hasPrefix("_") ? String(method.dropFirst()) : method
         if method == "session/request_permission" {
@@ -635,7 +703,7 @@ final class AppStore: ObservableObject {
         } catch { stopOperation(id, phase: "Stopped") }
     }
 
-    private func beginOperation(_ id: UUID, phase: String) -> UUID {
+    func beginOperation(_ id: UUID, phase: String) -> UUID {
         flushTranscript(id)
         let operationID = UUID()
         operationIDs[id] = operationID
@@ -647,12 +715,12 @@ final class AppStore: ObservableObject {
         return operationID
     }
 
-    private func checkOperation(_ id: UUID, operationID: UUID) throws {
+    func checkOperation(_ id: UUID, operationID: UUID) throws {
         try Task.checkCancellation()
         guard operationIDs[id] == operationID else { throw CancellationError() }
     }
 
-    private func finishOperation(_ id: UUID, operationID: UUID) {
+    func finishOperation(_ id: UUID, operationID: UUID) {
         guard operationIDs[id] == operationID else { return }
         flushTranscript(id)
         operationIDs.removeValue(forKey: id)
@@ -662,15 +730,16 @@ final class AppStore: ObservableObject {
         runs[id]?.isRunning = false; runs[id]?.isConfiguring = false
         runs[id]?.approvals = []; runs[id]?.questions = []
         replaying.remove(id); importing.remove(id); importBuffers.removeValue(forKey: id); pendingPrompts.removeValue(forKey: id)
+        features.composer.operationDidEnd(conversationID: id)
     }
 
-    private func discardConnection(_ id: UUID) {
+    func discardConnection(_ id: UUID) {
         clients.removeValue(forKey: id)?.stop()
         loaded.remove(id)
         runs[id]?.approvals = []; runs[id]?.questions = []
     }
 
-    private func stopOperation(_ id: UUID, phase: String) {
+    func stopOperation(_ id: UUID, phase: String) {
         // Invalidate first: continuations from the old client must not clean up a new run.
         flushTranscript(id)
         operationIDs.removeValue(forKey: id)
@@ -680,6 +749,7 @@ final class AppStore: ObservableObject {
         discardConnection(id)
         replaying.remove(id); importing.remove(id); importBuffers.removeValue(forKey: id); pendingPrompts.removeValue(forKey: id)
         runs[id]?.isRunning = false; runs[id]?.isConfiguring = false; runs[id]?.phase = phase
+        features.composer.operationDidEnd(conversationID: id)
     }
 
     func setModel(_ model: ModelOption) {
@@ -725,7 +795,7 @@ final class AppStore: ObservableObject {
         } ?? model?.defaultReasoningID ?? ""
     }
 
-    private func setSessionOption(key: String, value: String) {
+    func setSessionOption(key: String, value: String) {
         guard let id = state.selectedConversationID, let project, !run.isRunning, !run.isConfiguring else { return }
         let operationID = beginOperation(id, phase: "Updating settings")
         runs[id]?.isConfiguring = true
@@ -762,7 +832,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func updateConfig(_ client: ACPClient, id: UUID, key: String, value: String) async throws {
+    func updateConfig(_ client: ACPClient, id: UUID, key: String, value: String) async throws {
         guard let session = task(id)?.sessionID else { throw DesktopError.message("The task has no session.") }
         let result = try await client.request("session/set_config_option", params: [
             "sessionId": session, "configId": key, "value": value
@@ -776,14 +846,14 @@ final class AppStore: ObservableObject {
         guard confirmed == value else { throw DesktopError.message("The runtime did not apply the selected setting. Try another option.") }
     }
 
-    private func persistSessionOptions(_ id: UUID) {
+    func persistSessionOptions(_ id: UUID) {
         guard let index = state.conversations.firstIndex(where: { $0.id == id }), let run = runs[id] else { return }
         state.conversations[index].modelID = run.modelID.isEmpty ? nil : run.modelID
         state.conversations[index].reasoningID = run.reasoningID.isEmpty ? nil : run.reasoningID
         save()
     }
 
-    private func applyModels(_ models: [String: Any], id: UUID) {
+    func applyModels(_ models: [String: Any], id: UUID) {
         runs[id, default: RunState()].models = SessionOptions.models(models)
         runs[id]?.modelID = models["currentModelId"] as? String ?? ""
         let selected = runs[id]?.models.first { $0.id == runs[id]?.modelID }
@@ -791,7 +861,7 @@ final class AppStore: ObservableObject {
         runs[id]?.reasoningID = selected?.defaultReasoningID ?? ""
     }
 
-    private func applyConfigOptions(_ options: [[String: Any]], id: UUID) {
+    func applyConfigOptions(_ options: [[String: Any]], id: UUID) {
         if let model = options.first(where: { $0["id"] as? String == "model" }) {
             let catalog = runs[id]?.models ?? []
             runs[id, default: RunState()].models = SessionOptions.choices(model).map { option in
@@ -804,33 +874,42 @@ final class AppStore: ObservableObject {
         runs[id]?.reasoningID = effort?["currentValue"] as? String ?? ""
     }
 
-    func syncHistory() {
-        guard let project, !syncing else { return }
+    /// Imports saved harness sessions for the given projects (the selected one by default).
+    func syncHistory(projects requested: [Project]? = nil) {
+        let targets = requested ?? project.map { [$0] } ?? []
+        guard !targets.isEmpty, !syncing else { return }
         syncing = true
         Task {
-            let client = ACPClient()
-            historyClient = client
-            defer { client.stop(); if historyClient === client { historyClient = nil }; syncing = false }
-            do {
-                try client.start(executable: binaryPath, cwd: project.path)
-                let initial = try await initialize(client)
-                try await authenticate(client, initial: initial)
-                var cursor: String?
-                repeat {
-                    var params: [String: Any] = ["cwd": project.path]
-                    if let cursor { params["cursor"] = cursor }
-                    let response = try await client.request("session/list", params: params)
-                    for session in response["sessions"] as? [[String: Any]] ?? [] {
-                        guard let sessionID = session["sessionId"] as? String,
-                              !state.deletedSessionIDs.contains(sessionID),
-                              !state.conversations.contains(where: { $0.sessionID == sessionID }) else { continue }
-                        let date = (session["updatedAt"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
-                        state.conversations.append(Conversation(projectID: project.id, title: session["title"] as? String ?? "Grok task", sessionID: sessionID, updatedAt: date))
-                    }
-                    cursor = response["nextCursor"] as? String
-                } while cursor != nil
-                save()
-            } catch { banner = "Could not import harness tasks: \(error.localizedDescription)" }
+            defer { syncing = false }
+            var failures: [String] = []
+            for project in targets where state.projects.contains(where: { $0.id == project.id }) {
+                let client = ACPClient()
+                historyClient = client
+                defer { client.stop(); if historyClient === client { historyClient = nil } }
+                do {
+                    try client.start(executable: binaryPath, cwd: project.path)
+                    let initial = try await initialize(client)
+                    try await authenticate(client, initial: initial)
+                    var cursor: String?
+                    repeat {
+                        var params: [String: Any] = ["cwd": project.path]
+                        if let cursor { params["cursor"] = cursor }
+                        let response = try await client.request("session/list", params: params)
+                        for session in response["sessions"] as? [[String: Any]] ?? [] {
+                            guard let sessionID = session["sessionId"] as? String,
+                                  !state.deletedSessionIDs.contains(sessionID),
+                                  !state.conversations.contains(where: { $0.sessionID == sessionID }) else { continue }
+                            let date = (session["updatedAt"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
+                            state.conversations.append(Conversation(projectID: project.id, title: session["title"] as? String ?? "Grok task", sessionID: sessionID, updatedAt: date))
+                        }
+                        cursor = response["nextCursor"] as? String
+                    } while cursor != nil
+                } catch {
+                    failures.append(targets.count > 1 ? "\(project.name): \(error.localizedDescription)" : error.localizedDescription)
+                }
+            }
+            save()
+            if !failures.isEmpty { banner = "Could not import harness tasks: " + failures.joined(separator: "; ") }
         }
     }
 
@@ -870,9 +949,9 @@ final class AppStore: ObservableObject {
         if diffText != result { diffText = result }
     }
     func revealProject() { if let project { NSWorkspace.shared.open(URL(fileURLWithPath: project.path)) } }
-    func openTerminal() {
-        guard let project else { return }
-        NSWorkspace.shared.open([URL(fileURLWithPath: project.path)], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"), configuration: NSWorkspace.OpenConfiguration())
+    func openTerminal(at path: String? = nil) {
+        guard let path = path ?? project?.path else { return }
+        NSWorkspace.shared.open([URL(fileURLWithPath: path)], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"), configuration: NSWorkspace.OpenConfiguration())
     }
     func login(provider: String) {
         guard !loginRunning else { return }
@@ -916,7 +995,7 @@ final class AppStore: ObservableObject {
         catalogClient?.stop(); catalogClient = nil
         loginProcess?.terminate()
     }
-    private func task(_ id: UUID) -> Conversation? { state.conversations.first { $0.id == id } }
+    func task(_ id: UUID) -> Conversation? { state.conversations.first { $0.id == id } }
     func append(_ message: Message, to id: UUID) {
         flushTranscript(id)
         guard let i = state.conversations.firstIndex(where: { $0.id == id }) else { return }
@@ -928,423 +1007,4 @@ final class AppStore: ObservableObject {
 enum DesktopError: LocalizedError {
     case message(String)
     var errorDescription: String? { if case .message(let message) = self { return message }; return nil }
-}
-
-extension AppStore {
-    var availableCommands: [SlashCommand] {
-        var commands = DesktopCommands.catalog.filter { command in
-            guard let tool = MediaCommand.requiredTool(command.name) else { return true }
-            return run.availableTools?.contains(tool) == true
-        }
-        for command in run.commands {
-            if let index = commands.firstIndex(where: { $0.name == command.name }) {
-                // Keep native panels, but show the runtime's argument contract.
-                if commands[index].argumentHint == nil { commands[index].argumentHint = command.argumentHint }
-            } else { commands.append(command) }
-        }
-        return commands
-    }
-
-    func executeCommand(name: String, arguments: String = "") {
-        if handleDesktopCommand(name, arguments: arguments) { return }
-        if name == "goal", ["status", "pause", "resume", "clear"].contains(arguments), run.isRunning {
-            goalAction(arguments); return
-        }
-        guard !run.isRunning, !run.isConfiguring else { banner = "Wait for the current turn to finish or stop it before running /\(name)."; return }
-        let previousDraft = draft
-        let previousProjectID = state.selectedProjectID
-        draft = "/\(name)" + (arguments.isEmpty ? "" : " \(arguments)")
-        send()
-        if !previousDraft.isEmpty, SlashCommand.split(previousDraft) == nil,
-           state.selectedProjectID == previousProjectID, draft.isEmpty {
-            draft = previousDraft; drafts[draftLocation] = previousDraft
-        }
-    }
-
-    private func loadCommands(_ client: ACPClient, id: UUID, project: Project) async throws {
-        var params: [String: Any] = ["cwd": project.path]
-        if let session = task(id)?.sessionID { params["sessionId"] = session }
-        let response = try ExtensionResponse.unwrap(try await client.request("_x.ai/commands/list", params: params))
-        guard clients[id] === client else { throw CancellationError() }
-        runs[id, default: RunState()].commands = SlashCommand.parse(response["commands"] as? [[String: Any]] ?? [])
-        runs[id]?.commandsLoaded = true
-        runs[id]?.availableTools = response["tools"] as? [String] ?? runs[id]?.availableTools
-    }
-
-    func refreshCommands() async {
-        guard let project else { return }
-        do {
-            if let id = state.selectedConversationID, let client = clients[id], loaded.contains(id) {
-                try await loadCommands(client, id: id, project: project)
-            } else {
-                let client = ACPClient()
-                let clientID = UUID(); auxiliaryClients[clientID] = client
-                defer { client.stop(); auxiliaryClients.removeValue(forKey: clientID) }
-                try client.start(executable: binaryPath, cwd: project.path)
-                let initial = try await initialize(client)
-                try await authenticate(client, initial: initial)
-                let response = try ExtensionResponse.unwrap(try await client.request("_x.ai/commands/list", params: ["cwd": project.path]))
-                guard self.project?.id == project.id else { return }
-                catalogRun.commands = SlashCommand.parse(response["commands"] as? [[String: Any]] ?? [])
-                catalogRun.commandsLoaded = true
-                catalogRun.availableTools = response["tools"] as? [String]
-                commandCatalogProjectID = project.id
-            }
-        } catch { banner = "Could not load commands: \(error.localizedDescription)" }
-    }
-
-    @discardableResult
-    private func ensureConversation(title: String) -> UUID? {
-        if let id = state.selectedConversationID { return id }
-        guard let project else { return nil }
-        let item = Conversation(projectID: project.id, title: title, modelID: state.selectedModelID, reasoningID: state.selectedReasoningID)
-        state.conversations.insert(item, at: 0)
-        state.selectedConversationID = item.id
-        save()
-        return item.id
-    }
-
-    func featureSession() async throws -> (ACPClient, UUID, String) {
-        guard let project, let id = ensureConversation(title: "New task") else { throw DesktopError.message("Open a project first.") }
-        if let client = clients[id], loaded.contains(id), let session = task(id)?.sessionID { return (client, id, session) }
-        guard runs[id]?.isRunning != true else { throw DesktopError.message("The task is still connecting. Try again when it is ready.") }
-        let operationID = beginOperation(id, phase: "Connecting")
-        runs[id]?.isConfiguring = true
-        defer { finishOperation(id, operationID: operationID) }
-        do {
-            let client = try await connect(id: id, project: project, operationID: operationID)
-            try checkOperation(id, operationID: operationID)
-            guard let session = task(id)?.sessionID else { throw DesktopError.message("The runtime did not create a session.") }
-            runs[id]?.phase = "Ready"
-            return (client, id, session)
-        } catch {
-            if operationIDs[id] == operationID { discardConnection(id); runs[id]?.phase = "Needs attention" }
-            throw error
-        }
-    }
-
-    func enterPlanMode(description: String = "") {
-        guard !run.isRunning, !run.isConfiguring, let id = ensureConversation(title: description.isEmpty ? "Plan" : String(description.prefix(64))) else { return }
-        if description.isEmpty {
-            if let command = SlashCommand.split(draft), command.name == "plan", command.arguments.isEmpty { draft = "" }
-            setSessionOption(key: "mode", value: "plan")
-        }
-        else {
-            pendingModes[id] = "plan"
-            draft = description; send()
-        }
-    }
-
-    func createGoal(objective: String, tokenBudget: Int? = nil) {
-        let text = objective.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { featureError = "Enter a goal objective."; return }
-        guard tokenBudget == nil || tokenBudget! > 0 else { featureError = "The token budget must be positive."; return }
-        executeCommand(name: "goal", arguments: text + (tokenBudget.map { " --budget \($0)" } ?? ""))
-    }
-
-    func goalAction(_ action: String) {
-        guard ["status", "pause", "resume", "clear"].contains(action) else { return }
-        guard run.isRunning else { executeCommand(name: "goal", arguments: action); return }
-        if action == "status" { featureRows = goalRows(); return }
-        if action == "resume" { featureError = "The goal is already running."; return }
-        guard let id = state.selectedConversationID, let project, run.goal != nil else { featureError = "This task does not have an active goal."; return }
-        // The harness queues prompt requests behind a running turn. Cancel is its
-        // immediate control path and durably pauses the active goal.
-        let previousOperation = operations[id]
-        cancel()
-        guard action == "clear" else { return }
-        Task {
-            await previousOperation?.value
-            guard task(id) != nil, runs[id]?.isRunning != true else { return }
-            let operationID = beginOperation(id, phase: "Clearing goal")
-            defer { finishOperation(id, operationID: operationID) }
-            do {
-                let client = try await connect(id: id, project: project, operationID: operationID)
-                guard let session = task(id)?.sessionID else { return }
-                _ = try await client.request("session/prompt", params: ["sessionId": session, "prompt": [["type": "text", "text": "/goal clear"]]], timeout: 60)
-                try checkOperation(id, operationID: operationID)
-                runs[id]?.phase = "Ready"
-            } catch {
-                if operationIDs[id] == operationID { runs[id]?.phase = "Needs attention"; featureError = "Could not clear goal: \(error.localizedDescription)" }
-            }
-        }
-    }
-
-    func refreshFeatures(_ panel: FeaturePanel) async {
-        let requestID = UUID()
-        featureRequestID = requestID; featureLoading = true; featureError = nil; featureRows = []
-        defer { if featureRequestID == requestID { featureLoading = false } }
-        guard let project else { featureError = "Open a project first."; return }
-        do {
-            if [.plan, .models, .reasoning, .history, .transcript].contains(panel) { return }
-            if panel == .goals { featureRows = goalRows(); return }
-            var temporary: ACPClient?
-            let temporaryID = UUID()
-            defer { temporary?.stop(); auxiliaryClients.removeValue(forKey: temporaryID) }
-            let client: ACPClient
-            var session: String?
-            var id = state.selectedConversationID
-            if [.skills, .personas, .agentDefinitions].contains(panel), id == nil {
-                let fresh = ACPClient(); temporary = fresh; client = fresh
-                auxiliaryClients[temporaryID] = fresh
-                try fresh.start(executable: binaryPath, cwd: project.path)
-                let initial = try await initialize(fresh)
-                try await authenticate(fresh, initial: initial)
-            } else {
-                let context = try await featureSession(); client = context.0; id = context.1; session = context.2
-            }
-            var params: [String: Any] = ["cwd": project.path]
-            if let session { params["sessionId"] = session }
-            let method: String
-            switch panel {
-            case .mcps: method = "mcp/list"
-            case .skills: method = "skills/list"
-            case .agents: method = "subagent/list_running"
-            case .plugins: method = "plugins/list"
-            case .hooks: method = "hooks/list"
-            case .memory: method = "memory/list"
-            case .workflows: method = "workflows/list"
-            case .personas, .agentDefinitions: method = "bundle/status"
-            default: return
-            }
-            let result = try ExtensionResponse.unwrap(try await client.request("_x.ai/\(method)", params: params, timeout: 60))
-            guard featureRequestID == requestID, self.project?.id == project.id, state.selectedConversationID == id else { return }
-            if let id, panel == .agents {
-                for item in result["subagents"] as? [[String: Any]] ?? [] { updateSubagent(item, id: id) }
-                featureRows = runs[id]?.subagents.map(\.row) ?? []
-            } else { featureRows = rows(for: panel, result: result, project: project) }
-        } catch {
-            if featureRequestID == requestID { featureError = error.localizedDescription }
-        }
-    }
-
-    private func rows(for panel: FeaturePanel, result: [String: Any], project: Project) -> [FeatureRow] {
-        switch panel {
-        case .mcps:
-            return (result["servers"] as? [[String: Any]] ?? []).compactMap { item in
-                guard let name = item["name"] as? String else { return nil }
-                let session = item["session"] as? [String: Any] ?? [:]
-                let tools = session["tools"] as? [[String: Any]] ?? []
-                let detail = ([item["url"] as? String ?? item["command"] as? String ?? "", session["blockedReason"] as? String ?? ""] + tools.map { "\($0["name"] as? String ?? "Tool"): \($0["description"] as? String ?? "")" }).filter { !$0.isEmpty }.joined(separator: "\n")
-                return FeatureRow(id: name, title: item["displayName"] as? String ?? name,
-                    subtitle: "\(session["status"] as? String ?? "Configured") · \(tools.count) tools", detail: detail,
-                    enabled: session["enabled"] as? Bool, actions: ["Restart"] + (session["authRequired"] as? Bool == true ? ["Sign in"] : []), payload: item)
-            }
-        case .skills:
-            let skills = result["skills"] as? [[String: Any]] ?? []
-            return skills.compactMap { item in
-                guard let name = item["name"] as? String else { return nil }
-                let plugin = item["plugin_name"] as? String
-                let path = item["path"] as? String
-                let invocation = run.commands.first(where: { path != nil && $0.skillPath == path })?.name ?? "\(plugin ?? item["scope"] as? String ?? "user"):\(name)"
-                var payload = item; payload["invocation"] = invocation
-                let uniqueID = skills.filter { $0["name"] as? String == name }.count > 1 ? (path ?? invocation) : name
-                return FeatureRow(id: uniqueID, title: item["display_name"] as? String ?? name,
-                    subtitle: item["short_description"] as? String ?? item["description"] as? String ?? "",
-                    detail: [plugin ?? item["scope"] as? String ?? "", item["path"] as? String ?? ""].filter { !$0.isEmpty }.joined(separator: " · "),
-                    enabled: item["enabled"] as? Bool ?? true,
-                    actions: item["user_invocable"] as? Bool == false || item["enabled"] as? Bool == false ? [] : ["Use"], payload: payload)
-            }
-        case .plugins, .hooks, .workflows:
-            let key = panel.rawValue
-            return (result[key] as? [[String: Any]] ?? []).enumerated().map { index, item in
-                let name = item["name"] as? String ?? item["id"] as? String ?? "\(key) \(index + 1)"
-                let enabled = panel == .workflows ? nil : item["enabled"] as? Bool ?? !(item["disabled"] as? Bool ?? false)
-                return FeatureRow(id: item["id"] as? String ?? name, title: name,
-                    subtitle: item["description"] as? String ?? item["event"] as? String ?? "",
-                    detail: item["path"] as? String ?? item["root"] as? String ?? item["command"] as? String ?? "",
-                    enabled: enabled, actions: panel == .workflows ? ["Use"] : ["Reload"], payload: item)
-            }
-        case .memory:
-            let enabled = result["enabled"] as? Bool ?? true
-            return [FeatureRow(id: "memory-setting", title: "Conversation memory", subtitle: enabled ? "Enabled" : "Disabled", enabled: enabled)] +
-                (result["files"] as? [[String: Any]] ?? []).compactMap { item in
-                    guard let path = item["path"] as? String else { return nil }
-                    return FeatureRow(id: path, title: item["title"] as? String ?? URL(fileURLWithPath: path).lastPathComponent,
-                        subtitle: item["source"] as? String ?? "", detail: path, actions: ["Open"], payload: item)
-                }
-        case .agentDefinitions, .personas:
-            let kind = panel == .personas ? "personas" : "agents"
-            let details = result["personaDetails"] as? [[String: Any]] ?? []
-            var rows = (result[kind] as? [String] ?? []).map { name in
-                FeatureRow(id: "bundled:\(name)", title: name, subtitle: "Bundled",
-                    detail: details.first(where: { $0["name"] as? String == name })?["description"] as? String ?? "",
-                    actions: ["Inspect"], payload: ["kind": panel == .personas ? "persona" : "agent", "name": name])
-            }
-            let roots = [URL(fileURLWithPath: project.path).appendingPathComponent(".grok/\(kind)"), FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".grok/\(kind)")]
-            for root in roots {
-                for file in (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? [] where ["md", "toml", "yaml", "yml"].contains(file.pathExtension) {
-                    rows.append(FeatureRow(id: file.path, title: file.deletingPathExtension().lastPathComponent, subtitle: root == roots.first ? "Project" : "User", detail: file.path, actions: ["Open"], payload: ["path": file.path]))
-                }
-            }
-            return rows
-        default: return []
-        }
-    }
-
-    private func goalRows() -> [FeatureRow] {
-        guard let goal = run.goal, goal.status != "cleared" else { return [] }
-        return [FeatureRow(id: goal.id, title: goal.objective, subtitle: "\(goal.status) · \(goal.phase)",
-            detail: "\(goal.tokensUsed) tokens" + (goal.tokenBudget.map { " of \($0)" } ?? "") + (goal.detail.isEmpty ? "" : "\n\(goal.detail)"),
-            actions: ["Status"] + (goal.isActive ? ["Pause"] : goal.isPaused ? ["Resume"] : []) + ["Clear"])]
-    }
-
-    func toggleFeature(_ row: FeatureRow, panel: FeaturePanel) {
-        guard let enabled = row.enabled else { return }
-        let cwd = project?.path ?? ""
-        performFeatureAction(panel) { client, _, session in
-            var params: [String: Any]
-            let method: String
-            switch panel {
-            case .mcps: method = "mcp/toggle"; params = ["session_id": session, "server_name": row.id, "enabled": !enabled]
-            case .skills: method = "skills/toggle"; params = ["name": row.payload["name"] as? String ?? row.id, "enabled": !enabled, "cwd": cwd]
-            case .plugins: method = "plugins/action"; params = ["sessionId": session, "action": ["type": enabled ? "disable" : "enable", "plugin_id": row.id]]
-            case .hooks: method = "hooks/action"; params = ["sessionId": session, "action": ["type": enabled ? "disable" : "enable", "hook_name": row.id]]
-            case .memory: method = "memory/toggle"; params = ["sessionId": session, "enabled": !enabled]
-            default: return
-            }
-            _ = try ExtensionResponse.unwrap(try await client.request("_x.ai/\(method)", params: params))
-        }
-    }
-
-    func invokeFeature(_ row: FeatureRow, panel: FeaturePanel, action: String, arguments: String = "") {
-        let action = action.lowercased()
-        if panel == .goals { goalAction(action); return }
-        if action == "run" || action == "use" {
-            featurePanel = nil
-            if panel == .skills { draft = "/\(row.payload["invocation"] as? String ?? row.id) " + arguments }
-            else if panel == .workflows { draft = "/workflow \(row.title) " + arguments }
-            return
-        }
-        if action == "open", let path = row.payload["path"] as? String {
-            NSWorkspace.shared.open(URL(fileURLWithPath: path)); return
-        }
-        performFeatureAction(panel, refresh: action != "inspect") { client, id, session in
-            var result: [String: Any] = [:]
-            switch (panel, action) {
-            case (.mcps, "restart"):
-                _ = try ExtensionResponse.unwrap(try await client.request("_x.ai/mcp/toggle", params: ["session_id": session, "server_name": row.id, "enabled": false]))
-                result = try ExtensionResponse.unwrap(try await client.request("_x.ai/mcp/toggle", params: ["session_id": session, "server_name": row.id, "enabled": true]))
-            case (.mcps, "sign in"):
-                result = try ExtensionResponse.unwrap(try await client.request("_x.ai/mcp/auth_trigger", params: ["session_id": session, "server_name": row.id], timeout: 120))
-            case (.agents, "stop"):
-                result = try ExtensionResponse.unwrap(try await client.request("_x.ai/subagent/cancel", params: ["subagentId": row.id]))
-                if let outcome = result["outcome"] as? [String: Any], let index = self.runs[id]?.subagents.firstIndex(where: { $0.id == row.id }) {
-                    if outcome["kind"] as? String == "already_finished" { self.runs[id]?.subagents[index].status = outcome["status"] as? String ?? "completed" }
-                    else if outcome["kind"] as? String == "not_found" { self.runs[id]?.subagents[index].status = "unavailable" }
-                }
-            case (.agents, "inspect"):
-                result = try ExtensionResponse.unwrap(try await client.request("_x.ai/subagent/get", params: ["subagentId": row.id, "block": false]))
-                if let snapshot = result["snapshot"] as? [String: Any] { self.updateSubagent(snapshot, id: id) }
-            case (.agents, "message"):
-                guard !arguments.isEmpty, let address = self.runs[id]?.subagents.first(where: { $0.id == row.id })?.address else { throw DesktopError.message("Enter a message for an active subagent.") }
-                result = try ExtensionResponse.unwrap(try await client.request("_x.ai/subagent/message", params: ["sessionId": session, "agentAddress": address, "content": [["type": "text", "text": arguments]]]))
-                guard result["kind"] as? String == "accepted" else { throw DesktopError.message("The subagent did not accept the message (\(result["kind"] as? String ?? "unknown outcome")).") }
-            case (.personas, "inspect"), (.agentDefinitions, "inspect"):
-                result = try ExtensionResponse.unwrap(try await client.request("_x.ai/bundle/entry/get", params: ["kind": row.payload["kind"] as? String ?? "agents", "name": row.payload["name"] as? String ?? row.title]))
-                if let content = result["content"] as? String, let index = self.featureRows.firstIndex(where: { $0.id == row.id }) { self.featureRows[index].detail = content }
-            case (.hooks, "reload"), (.plugins, "reload"):
-                result = try ExtensionResponse.unwrap(try await client.request("_x.ai/\(panel.rawValue)/action", params: ["sessionId": session, "action": ["type": "reload"]]))
-            default: throw DesktopError.message("This action is not available for \(panel.title).")
-            }
-            if let message = result["message"] as? String { self.banner = message }
-        }
-    }
-
-    func performFeatureAction(_ panel: FeaturePanel, refresh: Bool = true, action: @escaping (ACPClient, UUID, String) async throws -> Void) {
-        guard !featureLoading else { return }
-        let requestID = UUID()
-        featureRequestID = requestID
-        let project = self.project
-        let selectedID = state.selectedConversationID
-        let selectedPanel = featurePanel
-        featureLoading = true; featureError = nil
-        Task {
-            defer { if featureRequestID == requestID { featureLoading = false } }
-            do {
-                guard self.project?.id == project?.id, self.state.selectedConversationID == selectedID else { throw CancellationError() }
-                let context = try await featureSession()
-                guard self.project?.id == project?.id, self.state.selectedConversationID == context.1 else { throw CancellationError() }
-                try await action(context.0, context.1, context.2)
-                guard featureRequestID == requestID, self.project?.id == project?.id, self.state.selectedConversationID == context.1, self.featurePanel == selectedPanel else { return }
-                if let project { try await loadCommands(context.0, id: context.1, project: project) }
-                guard featureRequestID == requestID, self.state.selectedConversationID == context.1, self.featurePanel == selectedPanel else { return }
-                if refresh { await refreshFeatures(panel) }
-                else if panel == .agents { featureRows = runs[context.1]?.subagents.map(\.row) ?? [] }
-            } catch {
-                if featureRequestID == requestID, !(error is CancellationError), self.featurePanel == selectedPanel { featureError = error.localizedDescription }
-            }
-        }
-    }
-
-    private func updateSubagent(_ value: [String: Any], id: UUID) {
-        guard let agentID = value["subagent_id"] as? String ?? value["subagentId"] as? String else { return }
-        var agents = runs[id]?.subagents ?? []
-        if let index = agents.firstIndex(where: { $0.id == agentID }) {
-            let incomingAttempt = value["attempt_id"] as? String ?? value["attemptId"] as? String
-            if value["sessionUpdate"] as? String == "subagent_spawned" {
-                if incomingAttempt != agents[index].attemptID { agents[index] = SubagentState(id: agentID) }
-                agents[index].status = "running"
-            } else if let incomingAttempt, let currentAttempt = agents[index].attemptID, incomingAttempt != currentAttempt { return }
-            agents[index].update(value)
-        }
-        else { var agent = SubagentState(id: agentID); agent.update(value); agents.append(agent) }
-        runs[id, default: RunState()].subagents = agents
-    }
-
-    private func receiveFeatureNotification(_ method: String, params: [String: Any], id: UUID) -> Bool {
-        if ["x.ai/mcp/servers_updated", "x.ai/mcp/tools_changed", "x.ai/mcp/server_status"].contains(method) {
-            if state.selectedConversationID == id, featurePanel == .mcps, !featureLoading {
-                featureNotificationRefresh?.cancel()
-                featureNotificationRefresh = Task { [weak self] in
-                    do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return }
-                    guard let self, self.state.selectedConversationID == id, self.featurePanel == .mcps, !self.featureLoading else { return }
-                    await self.refreshFeatures(.mcps)
-                }
-            }
-            return true
-        }
-        if method == "x.ai/session_notification", let nested = params["params"] as? [String: Any] {
-            return receiveFeatureNotification(method, params: nested, id: id)
-        }
-        if let session = params["sessionId"] as? String, let expected = task(id)?.sessionID, session != expected { return true }
-        guard ["x.ai/session/update", "x.ai/session_notification", "session/update"].contains(method), let update = params["update"] as? [String: Any] else { return false }
-        if consumeAdvancedUpdate(update, id: id) { return true }
-        switch update["sessionUpdate"] as? String {
-        case "goal_updated":
-            runs[id, default: RunState()].goal = GoalState(update)
-            if state.selectedConversationID == id, featurePanel == .goals { featureRows = goalRows() }
-            return true
-        case "subagent_spawned", "subagent_progress", "subagent_finished":
-            updateSubagent(update, id: id)
-            if state.selectedConversationID == id, featurePanel == .agents { featureRows = runs[id]?.subagents.map(\.row) ?? [] }
-            return true
-        default: return false
-        }
-    }
-
-    func forkSession() async {
-        guard !run.isRunning, let source = conversation, let project else { banner = "Select a stopped task to fork."; return }
-        do {
-            let (client, _, session) = try await featureSession()
-            let result = try ExtensionResponse.unwrap(try await client.request("_x.ai/session/fork", params: ["sourceSessionId": session, "sourceCwd": project.path, "newCwd": project.path]))
-            guard let sessionID = result["newSessionId"] as? String else { throw DesktopError.message("The runtime did not return the forked session.") }
-            let fork = Conversation(projectID: project.id, title: source.title + " (fork)", sessionID: sessionID, modelID: source.modelID, reasoningID: source.reasoningID)
-            state.conversations.insert(fork, at: 0); selectConversation(fork)
-            await loadImportedConversation()
-        } catch { banner = "Could not fork task: \(error.localizedDescription)" }
-    }
-
-    func refreshAfterRewind(id: UUID, conversationChanged: Bool) async {
-        let projectID = task(id)?.projectID
-        if conversationChanged {
-            discardConnection(id)
-            runs[id]?.plan = []; runs[id]?.subagents = []; runs[id]?.goal = nil
-            if state.selectedConversationID == id {
-                savedPlanContent = nil; savedPlanError = nil
-                await loadImportedConversation()
-            }
-        }
-        if projectID == state.selectedProjectID { await refreshWorkspace() }
-    }
 }

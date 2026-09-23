@@ -60,6 +60,7 @@ class MockHarness:
     def commands(self):
         commands = [
             {"name": "context", "description": "Inspect fixture context usage"},
+            {"name": "fixture-echo", "description": "Echo a harness command offline"},
             {"name": "compact", "description": "Compact fixture context"},
             {"name": "clear", "description": "Clear fixture context"},
             {"name": "goal", "description": "Set or manage a fixture goal", "input": {"hint": "<objective> [--budget <tokens>] | status | pause | resume | clear"}},
