@@ -813,6 +813,21 @@ pub(super) fn dispatch_task_result(result: TaskResult, app: &mut AppView) -> Vec
                 .on_refresh_task_lost(db_path, error);
             apply_workspace_transition(app, transition)
         }
+        TaskResult::TraceLoaded {
+            agent_id,
+            dir,
+            result,
+        } => {
+            if let Some(agent) = app.agents.get_mut(&agent_id)
+                && let Some(crate::views::modal::ActiveModal::Trace { state }) =
+                    agent.active_modal.as_mut()
+                && state.dir == dir
+                && state.is_loading()
+            {
+                state.finish(result.map(|data| *data));
+            }
+            vec![]
+        }
         TaskResult::CardDetailLoaded {
             host,
             generation,

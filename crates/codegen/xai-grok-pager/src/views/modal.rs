@@ -301,6 +301,11 @@ pub enum ActiveModal {
     UsageInfo {
         state: Box<crate::views::usage_modal::UsageInfoModalState>,
     },
+    /// Trace explorer (`/trace`): a full-screen snapshot of this session's recording.
+    /// Boxed because a loaded trace holds the whole recording.
+    Trace {
+        state: Box<crate::trace_view::tui::TraceOverlay>,
+    },
     /// Reset-settings confirmation, stacked above Settings. The underlying `SettingsModalState` is
     /// moved in/out so cancel preserves the user's filter/scroll position. The setting key lives only
     /// here (single source of truth for dispatch).
@@ -667,6 +672,7 @@ impl ActiveModal {
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
             | ActiveModal::UsageInfo { .. }
+            | ActiveModal::Trace { .. }
             | ActiveModal::RememberNoteReview { .. } => vec![],
         }
     }
@@ -699,6 +705,7 @@ impl ActiveModal {
             ActiveModal::ResetSettingsConfirm { .. } => "Reset setting?",
             ActiveModal::RememberNoteReview { .. } => "Memory Note",
             ActiveModal::UsageInfo { .. } => "Usage",
+            ActiveModal::Trace { .. } => "Trace",
         }
     }
 }

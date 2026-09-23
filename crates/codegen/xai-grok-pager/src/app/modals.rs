@@ -436,6 +436,19 @@ impl AgentView {
             return self.apply_usage_modal_outcome(outcome);
         }
 
+        // Trace explorer: owns every key; Esc clears its filters before closing.
+        if let ActiveModal::Trace { state } = modal {
+            use crate::trace_view::tui::OverlayOutcome;
+            return match state.key(*key) {
+                OverlayOutcome::Changed => InputOutcome::Changed,
+                OverlayOutcome::Close => {
+                    self.active_modal = None;
+                    InputOutcome::Changed
+                }
+                OverlayOutcome::Reload => InputOutcome::Action(Action::ShowTrace),
+            };
+        }
+
         // ResetSettingsConfirm: y/n routing
         // Handled before the generic char-match so Esc/F2/Ctrl+, route to Cancel (not modal close)
         if let Some(ActiveModal::ResetSettingsConfirm { modal, .. }) = self.active_modal.as_ref() {
@@ -487,6 +500,7 @@ impl AgentView {
             | ActiveModal::MemoryBrowser { .. }
             | ActiveModal::Settings { .. }
             | ActiveModal::UsageInfo { .. }
+            | ActiveModal::Trace { .. }
             | ActiveModal::ResetSettingsConfirm { .. }
             | ActiveModal::RememberNoteReview { .. } => unreachable!(),
         }
@@ -1562,6 +1576,16 @@ impl AgentView {
             }
         }
 
+        // Trace explorer: the wheel moves through its focused pane.
+        if let Some(ActiveModal::Trace { state }) = &mut self.active_modal {
+            match mouse.kind {
+                MouseEventKind::ScrollDown => state.scroll(3),
+                MouseEventKind::ScrollUp => state.scroll(-3),
+                _ => return InputOutcome::Unchanged,
+            }
+            return InputOutcome::Changed;
+        }
+
         // UsageInfo: chrome first (tabs / close / footer stay clickable), then drag / wheel.
         if let Some(ActiveModal::UsageInfo { state }) = &mut self.active_modal {
             let outcome = crate::views::usage_modal::route_usage_modal_mouse(
@@ -2351,6 +2375,8 @@ impl AgentView {
                         !searching,
                     );
                 }
+            } else if let modal::ActiveModal::Trace { state } = active_modal {
+                state.render(area, buf, &theme);
             } else if let modal::ActiveModal::UsageInfo { state } = active_modal {
                 crate::views::usage_modal::render_usage_modal(
                     buf,

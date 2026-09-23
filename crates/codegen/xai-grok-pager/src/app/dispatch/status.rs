@@ -307,6 +307,24 @@ pub(super) fn scrub_error_for_toast(error: &str) -> String {
     }
 }
 
+/// `/trace`: open the trace explorer, then read the session directory off the UI thread.
+pub(super) fn dispatch_show_trace(app: &mut AppView) -> Vec<Effect> {
+    let ActiveView::Agent(id) = app.active_view else {
+        return vec![];
+    };
+    let Some(agent) = app.agents.get_mut(&id) else {
+        return vec![];
+    };
+    let Some(dir) = agent.session.local_session_dir() else {
+        agent.show_toast("This session has not been recorded yet");
+        return vec![];
+    };
+    agent.active_modal = Some(crate::views::modal::ActiveModal::Trace {
+        state: Box::new(crate::trace_view::tui::TraceOverlay::loading(dir.clone())),
+    });
+    vec![Effect::LoadTrace { agent_id: id, dir }]
+}
+
 /// `/context` and the context-bar click: open the usage modal on its "Context usage" tab, or fetch-and-show in scrollback in minimal mode.
 pub(super) fn dispatch_show_context_info(app: &mut AppView) -> Vec<Effect> {
     if !app.screen_mode.is_minimal() {
