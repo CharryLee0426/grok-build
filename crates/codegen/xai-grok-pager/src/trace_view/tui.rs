@@ -961,6 +961,27 @@ fn entry_color(entry: &TranscriptEntry, theme: &Theme) -> Color {
     }
 }
 
+fn entry_is_encrypted(entry: &TranscriptEntry) -> bool {
+    entry.kind == EntryKind::Reasoning && entry.encrypted
+}
+
+fn event_is_encrypted(event: &TraceEvent) -> bool {
+    let kind = event.kind.trim().to_ascii_lowercase();
+    event.encrypted
+        && (kind.contains("reasoning")
+            || kind == "agent_thought_chunk"
+            || kind == "thinking"
+            || kind.ends_with("_thinking"))
+}
+
+fn encrypted_title(title: &str, encrypted: bool) -> String {
+    if encrypted {
+        format!("🔒 {title}")
+    } else {
+        title.to_owned()
+    }
+}
+
 fn event_color(event: &TraceEvent, theme: &Theme) -> Color {
     if is_error(event) {
         return theme.accent_error;
@@ -1434,7 +1455,7 @@ fn render_list(
                                 Style::default().fg(color),
                             ),
                             Span::styled(
-                                clean(&entry.title),
+                                encrypted_title(&clean(&entry.title), entry_is_encrypted(entry)),
                                 Style::default().fg(color).add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(
@@ -1458,7 +1479,7 @@ fn render_list(
                                 Style::default().fg(event_color(event, theme)),
                             ),
                             Span::styled(
-                                clean(&event.title),
+                                encrypted_title(&clean(&event.title), event_is_encrypted(event)),
                                 Style::default()
                                     .fg(event_color(event, theme))
                                     .add_modifier(Modifier::BOLD),
@@ -1694,9 +1715,14 @@ fn entry_content(data: &TraceData, selected: Option<usize>, tab: usize) -> Strin
         None => format!("CONTENT\n{}", entry.text),
     };
     format!(
-        "{}\n\nType        {}\nTurn        {}\nStatus      {}\nStarted     {}\nEnded       {}\nDuration    {}\nFirst token {}\nRecorded in {}\n\n{body}",
+        "{}\n\nType        {}\nEncrypted   {}\nTurn        {}\nStatus      {}\nStarted     {}\nEnded       {}\nDuration    {}\nFirst token {}\nRecorded in {}\n\n{body}",
         entry.title,
         entry.kind.label(),
+        if entry_is_encrypted(entry) {
+            "yes (opaque payload)"
+        } else {
+            "no"
+        },
         optional_number(entry.turn),
         entry.status.as_deref().unwrap_or("—"),
         clock(entry.start_ms),
@@ -1735,10 +1761,15 @@ fn detail_content(data: &TraceData, selected: Option<usize>, tab: usize) -> Stri
         .unwrap_or_else(|| "This record has no linked tool call.\n\nPress f to filter the list to tools.\nRaw JSON retains every recorded field.".to_owned());
     }
     format!(
-        "{}\n\nRecord      {}\nKind        {}\nStatus      {}\nTurn        {}\nTimestamp   {}\nElapsed     {}\nDuration    {}\nSource      {}{}\nTool call   {}\n\nCONTENT\n{}",
+        "{}\n\nRecord      {}\nKind        {}\nEncrypted   {}\nStatus      {}\nTurn        {}\nTimestamp   {}\nElapsed     {}\nDuration    {}\nSource      {}{}\nTool call   {}\n\nCONTENT\n{}",
         event.title,
         event.index,
         event.kind,
+        if event_is_encrypted(event) {
+            "yes (opaque payload)"
+        } else {
+            "no"
+        },
         event.status.as_deref().unwrap_or("Not recorded"),
         optional_number(event.turn),
         event.timestamp.as_deref().unwrap_or("Not recorded"),
@@ -1915,7 +1946,7 @@ mod tests {
             entry(1, "user", "Prompt", 1, 1_000, Some(1_000), &[0]),
             {"index": 2, "kind": "reasoning", "title": "Reasoning", "text": "think", "turn": 1,
                 "start_ms": 1_000, "end_ms": 3_000, "wait_ms": 1_000, "tool_call_id": null,
-                "status": null, "event_indices": []},
+                "status": null, "encrypted": true, "event_indices": []},
             entry(3, "tool", "shell", 1, 3_000, Some(4_000), &[1, 2]),
             entry(4, "tool", "shell", 1, 3_500, Some(4_500), &[]),
             entry(5, "assistant", "Assistant", 2, 60_000, Some(62_000), &[3])
@@ -2155,9 +2186,17 @@ mod tests {
             "█",
             "░",
             "┊",
+            "🔒",
         ] {
             assert!(text.contains(label), "missing {label}");
         }
+        assert!(entry_content(&data, Some(2), 1).contains("Encrypted   yes"));
+        let mut plain = transcript_fixture();
+        plain.transcript[2].encrypted = false;
+        let mut plain_terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+        let mut plain_state = Explorer::new(&plain);
+        draw(&mut plain_terminal, &plain, &mut plain_state);
+        assert!(!screen(&plain_terminal).contains("🔒"));
         // Short terminals keep the list and details and drop the lanes.
         let mut terminal = Terminal::new(TestBackend::new(80, 20)).unwrap();
         draw(&mut terminal, &data, &mut state);

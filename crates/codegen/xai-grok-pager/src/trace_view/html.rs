@@ -45,6 +45,39 @@ mod tests {
     }
 
     #[test]
+    fn report_serializes_encrypted_reasoning_metadata() {
+        let data: TraceData = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "source": "local",
+            "session_id": "encrypted-session",
+            "title": "Encrypted reasoning",
+            "model": null,
+            "cwd": null,
+            "created_at": null,
+            "updated_at": null,
+            "summary": {
+                "event_count": 0, "turn_count": 0, "tool_count": 0, "error_count": 0,
+                "duration_ms": null, "input_tokens": null, "output_tokens": null,
+                "cached_input_tokens": null, "total_tokens": null
+            },
+            "events": [],
+            "turns": [],
+            "tools": [],
+            "artifacts": [],
+            "warnings": [],
+            "transcript": [{
+                "index": 0, "kind": "reasoning", "title": "Reasoning", "text": "unavailable",
+                "turn": null, "start_ms": null, "end_ms": null, "wait_ms": null,
+                "tool_call_id": null, "status": null, "encrypted": true, "event_indices": []
+            }]
+        }))
+        .unwrap();
+        let html = render(&data).unwrap();
+        assert!(html.contains("\"encrypted\":true"));
+        assert!(html.contains("id=\"detail-lock\""));
+    }
+
+    #[test]
     fn report_preserves_payload_and_does_not_interpret_template_markers() {
         let data: TraceData = serde_json::from_value(serde_json::json!({
             "schema_version": 1, "source": "local", "session_id": "test",
