@@ -3,7 +3,9 @@ import AppKit
 
 @main
 struct GrokDesktopApp: App {
-    @StateObject private var store = AppStore()
+    // Held, not observed: the window's views observe the store themselves, and the menus
+    // observe `menuState`. Observing it here would rebuild the scene for every streamed chunk.
+    @State private var store = AppStore()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @AppStorage("appearance") private var appearance = "system"
 
@@ -18,38 +20,45 @@ struct GrokDesktopApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
         .windowResizability(.contentMinSize)
-        .commands {
-            CommandGroup(replacing: .newItem) {
-                Button("New Task") { store.newTask() }.keyboardShortcut("n")
-                Button("Open Project…") { store.addProject() }.keyboardShortcut("o", modifiers: [.command, .shift])
-                Button("Search Tasks") { store.showSearch.toggle() }.keyboardShortcut("k")
-                Button("Commands…") { store.showCommandPalette = true }.keyboardShortcut("p", modifiers: [.command, .shift])
-            }
-            CommandGroup(replacing: .appSettings) {
-                Button("Settings…") { store.showSettings = true }.keyboardShortcut(",")
-            }
-            CommandMenu("Task") {
-                Button("Plan Mode") { store.executeCommand(name: "plan") }.keyboardShortcut("p", modifiers: [.command, .option]).disabled(store.run.isRunning)
-                Button("Goal…") { store.featurePanel = .goals }.disabled(store.project == nil)
-                Button("Subagents…") { store.featurePanel = .agents }.disabled(store.project == nil)
-                Divider()
-                Button("Stop") { store.cancel() }.keyboardShortcut(".").disabled(!store.run.isRunning)
-                Button("Import Harness Tasks") { store.syncHistory() }.disabled(store.project == nil || store.syncing)
-                Divider()
-                Button("Show Changes") { store.showInspector.toggle() }.keyboardShortcut("j")
-                Button("Open in Terminal") { store.openTerminal() }.disabled(store.project == nil)
-                Button("Reveal Project in Finder") { store.revealProject() }.disabled(store.project == nil)
-            }
-            CommandMenu("Extensions") {
-                Button("MCP Servers…") { store.featurePanel = .mcps }
-                Button("Skills…") { store.featurePanel = .skills }
-                Button("Plugins…") { store.featurePanel = .plugins }
-                Button("Workflows…") { store.featurePanel = .workflows }
-                Button("Agent Definitions…") { store.featurePanel = .agentDefinitions }
-                Button("Personas…") { store.featurePanel = .personas }
-                Button("Hooks…") { store.featurePanel = .hooks }
-                Button("Memory…") { store.featurePanel = .memory }
-            }
+        .commands { AppCommands(store: store, menu: store.menuState) }
+    }
+}
+
+private struct AppCommands: Commands {
+    let store: AppStore
+    @ObservedObject var menu: MenuState
+
+    var body: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Task") { store.newTask() }.keyboardShortcut("n")
+            Button("Open Project…") { store.addProject() }.keyboardShortcut("o", modifiers: [.command, .shift])
+            Button("Search Tasks") { store.showSearch.toggle() }.keyboardShortcut("k")
+            Button("Commands…") { store.showCommandPalette = true }.keyboardShortcut("p", modifiers: [.command, .shift])
+        }
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") { store.showSettings = true }.keyboardShortcut(",")
+        }
+        CommandMenu("Task") {
+            Button("Plan Mode") { store.executeCommand(name: "plan") }.keyboardShortcut("p", modifiers: [.command, .option]).disabled(menu.isRunning)
+            Button("Goal…") { store.featurePanel = .goals }.disabled(!menu.hasProject)
+            Button("Subagents…") { store.featurePanel = .agents }.disabled(!menu.hasProject)
+            Divider()
+            Button("Stop") { store.cancel() }.keyboardShortcut(".").disabled(!menu.isRunning)
+            Button("Import Harness Tasks") { store.syncHistory() }.disabled(!menu.hasProject || menu.isSyncing)
+            Divider()
+            Button("Show Changes") { store.showInspector.toggle() }.keyboardShortcut("j")
+            Button("Open in Terminal") { store.openTerminal() }.disabled(!menu.hasProject)
+            Button("Reveal Project in Finder") { store.revealProject() }.disabled(!menu.hasProject)
+        }
+        CommandMenu("Extensions") {
+            Button("MCP Servers…") { store.featurePanel = .mcps }
+            Button("Skills…") { store.featurePanel = .skills }
+            Button("Plugins…") { store.featurePanel = .plugins }
+            Button("Workflows…") { store.featurePanel = .workflows }
+            Button("Agent Definitions…") { store.featurePanel = .agentDefinitions }
+            Button("Personas…") { store.featurePanel = .personas }
+            Button("Hooks…") { store.featurePanel = .hooks }
+            Button("Memory…") { store.featurePanel = .memory }
         }
     }
 }

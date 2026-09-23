@@ -2,11 +2,12 @@ import SwiftUI
 import AppKit
 
 enum Theme {
-    static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color {
-        Color(nsColor: NSColor(name: nil) { appearance in
+    static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color { Color(nsColor: adaptiveNS(light, dark)) }
+    static func adaptiveNS(_ light: UInt32, _ dark: UInt32) -> NSColor {
+        NSColor(name: nil) { appearance in
             let value = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? dark : light
             return NSColor(srgbRed: Double((value >> 16) & 255) / 255, green: Double((value >> 8) & 255) / 255, blue: Double(value & 255) / 255, alpha: 1)
-        })
+        }
     }
     static let canvas = adaptive(0xFAFAFC, 0x1C1C1E)
     static let sidebar = Color(nsColor: .windowBackgroundColor)
@@ -16,8 +17,10 @@ enum Theme {
     static let line = Color(nsColor: .separatorColor)
     static let ink = Color(nsColor: .labelColor)
     static let muted = Color(nsColor: .secondaryLabelColor)
-    static let accent = adaptive(0x41634C, 0xA1BFA8)
-    static let green = adaptive(0x3B7751, 0x91C5A1)
+    static let accentNS = adaptiveNS(0x41634C, 0xA1BFA8)
+    static let greenNS = adaptiveNS(0x3B7751, 0x91C5A1)
+    static let accent = Color(nsColor: accentNS)
+    static let green = Color(nsColor: greenNS)
 }
 
 extension View {

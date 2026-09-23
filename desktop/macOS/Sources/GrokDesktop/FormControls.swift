@@ -110,3 +110,51 @@ struct PopoverRowStyle: ButtonStyle {
             .onHover { hovered = $0 }
     }
 }
+
+/// A collapsible section whose whole header row is the click target.
+/// Expanding and collapsing are not animated: animating the height of long streamed
+/// content forces a relayout on every frame of the animation.
+struct FoldableSection<Header: View, Content: View>: View {
+    @Binding var isExpanded: Bool
+    @ViewBuilder var header: () -> Header
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withTransaction(Transaction(animation: nil)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.muted)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .animation(.easeOut(duration: 0.12), value: isExpanded)
+                        .frame(width: 20, height: 20)
+                        .accessibilityHidden(true)
+                    header()
+                }
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(FoldHeaderStyle())
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint(isExpanded ? "Collapse" : "Expand")
+            if isExpanded { content() }
+        }
+    }
+}
+
+struct FoldHeaderStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View { FoldHeaderBackground(configuration: configuration) }
+}
+
+private struct FoldHeaderBackground: View {
+    let configuration: ButtonStyleConfiguration
+    @State private var hovered = false
+
+    var body: some View {
+        configuration.label
+            .background(Theme.hover.opacity(configuration.isPressed ? 0.9 : hovered ? 0.55 : 0), in: RoundedRectangle(cornerRadius: 9))
+            .onHover { hovered = $0 }
+    }
+}

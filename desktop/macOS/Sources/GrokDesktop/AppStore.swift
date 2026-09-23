@@ -1,5 +1,15 @@
 import AppKit
+import Combine
 import SwiftUI
+
+/// The few flags the menu bar depends on. They are published apart from the store, which
+/// changes many times a second while output streams, so menus are rebuilt only when they change.
+@MainActor
+final class MenuState: ObservableObject {
+    @Published fileprivate(set) var isRunning = false
+    @Published fileprivate(set) var hasProject = false
+    @Published fileprivate(set) var isSyncing = false
+}
 
 @MainActor
 final class AppStore: ObservableObject {
@@ -68,6 +78,15 @@ final class AppStore: ObservableObject {
     private var pendingPrompts: [UUID: Message] = [:]
     private var historyClient: ACPClient?
     private var saveTask: Task<Void, Never>?
+    private var saveDeadline: Date?
+    /// Serializes state writes so the newest snapshot always lands last.
+    private let persistence = DispatchQueue(label: "ai.grok.desktop.state", qos: .utility)
+    private var pendingTranscript: [UUID: [[String: Any]]] = [:]
+    private var transcriptFlush: Task<Void, Never>?
+    private var transcriptRevisions: [UUID: Int] = [:]
+    let menuState = MenuState()
+    private var menuStateObserver: AnyCancellable?
+    private var menuStateUpdateScheduled = false
     private var loginProcess: Process?
     private let git = WorkspaceService()
 
@@ -109,25 +128,64 @@ final class AppStore: ObservableObject {
         }
         self.binaryPath = binaryPath ?? ProcessInfo.processInfo.environment["GROK_DESKTOP_HARNESS"] ?? DesktopPaths.findHarness(in: state.projects.first?.path)
         if state.projects.contains(where: { $0.id == state.selectedProjectID }) == false { state.selectedProjectID = state.projects.first?.id }
-    }
-
-    func save() {
-        saveTask?.cancel()
-        saveTask = Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard !Task.isCancelled else { return }
-            self?.flush()
+        updateMenuState()
+        menuStateObserver = objectWillChange.sink { [weak self] _ in
+            MainActor.assumeIsolated {
+                // The change has not landed yet; read it once the current burst is done.
+                guard let self, !self.menuStateUpdateScheduled else { return }
+                self.menuStateUpdateScheduled = true
+                DispatchQueue.main.async { [weak self] in self?.updateMenuState() }
+            }
         }
     }
 
+    private func updateMenuState() {
+        menuStateUpdateScheduled = false
+        let isRunning = run.isRunning, hasProject = project != nil
+        if menuState.isRunning != isRunning { menuState.isRunning = isRunning }
+        if menuState.hasProject != hasProject { menuState.hasProject = hasProject }
+        if menuState.isSyncing != syncing { menuState.isSyncing = syncing }
+    }
+
+    /// Coalesces bursts of changes into one write, which is encoded off the main thread.
+    func save() {
+        let now = Date()
+        // Streaming output would postpone a plain debounce indefinitely, so bound the wait.
+        let deadline = saveDeadline ?? now.addingTimeInterval(5)
+        saveDeadline = deadline
+        let delay = max(0, min(0.25, deadline.timeIntervalSince(now)))
+        saveTask?.cancel()
+        saveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled, let self else { return }
+            let snapshot = self.takeSnapshot()
+            self.persistence.async { [weak self] in
+                do { try Self.write(snapshot.state, to: snapshot.file) }
+                catch {
+                    let message = error.localizedDescription
+                    DispatchQueue.main.async { self?.banner = "Could not save task history: \(message)" }
+                }
+            }
+        }
+    }
+
+    /// Writes the current state before returning, after any write already queued.
     func flush() {
-        do {
-            let file = stateFile
-            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(state).write(to: file, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        } catch { banner = "Could not save task history: \(error.localizedDescription)" }
+        let snapshot = takeSnapshot()
+        do { try persistence.sync { try Self.write(snapshot.state, to: snapshot.file) } }
+        catch { banner = "Could not save task history: \(error.localizedDescription)" }
+    }
+
+    private func takeSnapshot() -> (state: DesktopState, file: URL) {
+        saveTask?.cancel(); saveTask = nil; saveDeadline = nil
+        return (state, stateFile)
+    }
+
+    nonisolated private static func write(_ state: DesktopState, to file: URL) throws {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+        try encoder.encode(state).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 
     func addProject() {
@@ -182,6 +240,7 @@ final class AppStore: ObservableObject {
         stopOperation(id, phase: "Ready")
         drafts.removeValue(forKey: .conversation(id))
         runs.removeValue(forKey: id)
+        transcriptRevisions.removeValue(forKey: id)
         state.conversations.removeAll { $0.id == id }
         if state.selectedConversationID == id {
             state.selectedConversationID = nil
@@ -301,6 +360,7 @@ final class AppStore: ObservableObject {
                 if promptText != nil { block["_meta"] = ["displayText": prompt] }
                 let result = try await client.request("session/prompt", params: ["sessionId": session, "prompt": [block]], timeout: nil)
                 try checkOperation(id, operationID: operationID)
+                flushTranscript(id)
                 let stopped = cancellationRequested.contains(id) || result["stopReason"] as? String == "cancelled"
                 runs[id]?.phase = stopped ? "Stopped" : "Ready"
                 runs[id]?.isRunning = false
@@ -365,7 +425,9 @@ final class AppStore: ObservableObject {
             try checkOperation(id, operationID: operationID)
             if let index = state.conversations.firstIndex(where: { $0.id == id }) {
                 // The harness owns persisted history. Keep the visible prompt that has not been sent yet.
+                pendingTranscript.removeValue(forKey: id)
                 state.conversations[index].messages = (importBuffers[id] ?? []) + (pendingPrompts[id].map { [$0] } ?? [])
+                transcriptRevisions[id, default: 0] += 1
             }
         } else {
             result = try await client.request("session/new", params: params, timeout: 120)
@@ -459,9 +521,37 @@ final class AppStore: ObservableObject {
         if importing.contains(id) { return }
         // The user message is optimistically inserted when sending.
         if kind == "user_message_chunk", !replaying.contains(id) { return }
-        TranscriptReducer.apply(update, to: &state.conversations[i].messages)
-        save()
+        // Chunks can arrive hundreds of times a second. Applying each one would re-render every
+        // view that observes the store, so apply them in batches, at most once per frame.
+        pendingTranscript[id, default: []].append(update)
+        if transcriptFlush == nil {
+            transcriptFlush = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 33_000_000)
+                guard !Task.isCancelled else { return }
+                self?.flushTranscript()
+            }
+        }
     }
+
+    /// Applies buffered streaming updates for one conversation, or for all of them.
+    /// Anything that reads or replaces a transcript at a turn boundary flushes first.
+    func flushTranscript(_ only: UUID? = nil) {
+        var changed = false
+        for id in only.map({ [$0] }) ?? Array(pendingTranscript.keys) {
+            guard let updates = pendingTranscript.removeValue(forKey: id),
+                  let i = state.conversations.firstIndex(where: { $0.id == id }) else { continue }
+            var messages = state.conversations[i].messages
+            for update in updates { TranscriptReducer.apply(update, to: &messages) }
+            state.conversations[i].messages = messages
+            transcriptRevisions[id, default: 0] += 1
+            changed = true
+        }
+        if pendingTranscript.isEmpty { transcriptFlush?.cancel(); transcriptFlush = nil }
+        if changed { save() }
+    }
+
+    /// Changes whenever the conversation's transcript does. Views compare this instead of text.
+    func transcriptRevision(of id: UUID?) -> Int { id.flatMap { transcriptRevisions[$0] } ?? 0 }
 
     private var importing: Set<UUID> = []
     private func handleRequest(_ requestID: Any, method: String, params: [String: Any], id: UUID, client: ACPClient) {
@@ -546,6 +636,7 @@ final class AppStore: ObservableObject {
     }
 
     private func beginOperation(_ id: UUID, phase: String) -> UUID {
+        flushTranscript(id)
         let operationID = UUID()
         operationIDs[id] = operationID
         cancellationFallbacks.removeValue(forKey: id)?.cancel()
@@ -563,6 +654,7 @@ final class AppStore: ObservableObject {
 
     private func finishOperation(_ id: UUID, operationID: UUID) {
         guard operationIDs[id] == operationID else { return }
+        flushTranscript(id)
         operationIDs.removeValue(forKey: id)
         operations.removeValue(forKey: id)
         cancellationFallbacks.removeValue(forKey: id)?.cancel()
@@ -580,6 +672,7 @@ final class AppStore: ObservableObject {
 
     private func stopOperation(_ id: UUID, phase: String) {
         // Invalidate first: continuations from the old client must not clean up a new run.
+        flushTranscript(id)
         operationIDs.removeValue(forKey: id)
         operations.removeValue(forKey: id)?.cancel()
         cancellationFallbacks.removeValue(forKey: id)?.cancel()
@@ -764,15 +857,17 @@ final class AppStore: ObservableObject {
         guard let project else { return }
         let snapshot = await git.inspect(path: project.path)
         guard self.project?.id == project.id else { return }
-        workspace = snapshot
-        if let file = selectedFile { await selectFile(file) }
+        // This runs every few seconds; publishing an unchanged snapshot would re-render the window.
+        if workspace != snapshot { workspace = snapshot }
+        if let file = selectedFile { await selectFile(file, showsProgress: false) }
     }
-    func selectFile(_ file: String) async {
+    func selectFile(_ file: String, showsProgress: Bool = true) async {
         guard let project else { return }
-        selectedFile = file; diffText = "Loading changes…"
+        if selectedFile != file { selectedFile = file }
+        if showsProgress { diffText = "Loading changes…" }
         let result = await git.diff(path: project.path, file: file)
         guard selectedFile == file, self.project?.id == project.id else { return }
-        diffText = result
+        if diffText != result { diffText = result }
     }
     func revealProject() { if let project { NSWorkspace.shared.open(URL(fileURLWithPath: project.path)) } }
     func openTerminal() {
@@ -812,7 +907,7 @@ final class AppStore: ObservableObject {
     }
     func cancelLogin() { loginProcess?.terminate() }
     func shutdown() {
-        saveTask?.cancel(); flush()
+        flushTranscript(); flush()
         featureNotificationRefresh?.cancel()
         for client in auxiliaryClients.values { client.stop() }
         auxiliaryClients.removeAll()
@@ -823,8 +918,10 @@ final class AppStore: ObservableObject {
     }
     private func task(_ id: UUID) -> Conversation? { state.conversations.first { $0.id == id } }
     func append(_ message: Message, to id: UUID) {
+        flushTranscript(id)
         guard let i = state.conversations.firstIndex(where: { $0.id == id }) else { return }
         state.conversations[i].messages.append(message); state.conversations[i].updatedAt = Date(); save()
+        transcriptRevisions[id, default: 0] += 1
     }
 }
 

@@ -195,13 +195,25 @@ final class ACPClient {
             do {
                 while let chunk = try Self.readChunk(from: handle, limit: 64 * 1024) {
                     buffer.append(chunk)
-                    while let newline = buffer.firstIndex(of: 0x0A) {
-                        let line = Data(buffer[..<newline])
-                        buffer.removeSubrange(...newline)
-                        if line.allSatisfy({ $0 == 0x0D || $0 == 0x20 || $0 == 0x09 }) { continue }
-                        let message = try Self.decode(line)
-                        DispatchQueue.main.async { [weak self] in self?.receive(message, connectionID: connection.id) }
+                    // Deliver everything decoded from one read together: streaming sends many
+                    // small frames, and each main-queue hop has a cost. A frame that fails to
+                    // decode still leaves the earlier ones to be delivered before the disconnect.
+                    var messages: [[String: Any]] = []
+                    defer {
+                        if !messages.isEmpty {
+                            DispatchQueue.main.async { [weak self, messages] in
+                                for message in messages { self?.receive(message, connectionID: connection.id) }
+                            }
+                        }
                     }
+                    var lineStart = buffer.startIndex
+                    while let newline = buffer[lineStart...].firstIndex(of: 0x0A) {
+                        let line = Data(buffer[lineStart..<newline])
+                        lineStart = buffer.index(after: newline)
+                        if line.allSatisfy({ $0 == 0x0D || $0 == 0x20 || $0 == 0x09 }) { continue }
+                        messages.append(try Self.decode(line))
+                    }
+                    buffer.removeSubrange(..<lineStart)
                     guard buffer.count <= Self.maximumFrameBytes else {
                         throw ACPClientError.invalidMessage("The Grok harness sent an ACP message larger than 16 MB.")
                     }
