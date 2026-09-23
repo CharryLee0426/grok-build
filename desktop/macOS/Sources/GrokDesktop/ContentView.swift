@@ -140,7 +140,10 @@ struct SidebarView: View {
                         }
                     }.foregroundStyle(Theme.muted).padding(.leading, 10).padding(.top, 18)
                     ForEach(store.visibleConversations) { task in
-                        TaskSidebarRow(task: task)
+                        let run = store.runs[task.id]
+                        TaskSidebarRow(store: store, task: task, isRunning: run?.isRunning == true, isConfiguring: run?.isConfiguring == true,
+                                       isSelected: task.id == store.state.selectedConversationID, needsApproval: !(run?.approvals.isEmpty ?? true))
+                            .equatable()
                     }
                     if store.visibleConversations.isEmpty {
                         Text(store.search.isEmpty ? "Your tasks will appear here." : "No matching tasks.")
@@ -177,15 +180,25 @@ struct SidebarView: View {
     }
 }
 
-private struct TaskSidebarRow: View {
-    @EnvironmentObject var store: AppStore
-    @State private var isHovered = false
+/// Rows take plain values rather than observing the store, so streamed output re-renders
+/// only the row whose task changed, not the whole list.
+private struct TaskSidebarRow: View, Equatable {
+    let store: AppStore
     let task: Conversation
+    let isRunning: Bool
+    let isConfiguring: Bool
+    let isSelected: Bool
+    let needsApproval: Bool
+    @State private var isHovered = false
 
-    private var isRunning: Bool { store.runs[task.id]?.isRunning == true }
-    private var isBusy: Bool { isRunning || store.runs[task.id]?.isConfiguring == true }
-    private var isSelected: Bool { task.id == store.state.selectedConversationID }
-    private var needsApproval: Bool { !(store.runs[task.id]?.approvals.isEmpty ?? true) }
+    private var isBusy: Bool { isRunning || isConfiguring }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.task.id == rhs.task.id && lhs.task.title == rhs.task.title && lhs.task.isPinned == rhs.task.isPinned
+            && lhs.task.isArchived == rhs.task.isArchived && lhs.task.updatedAt == rhs.task.updatedAt
+            && lhs.isRunning == rhs.isRunning && lhs.isConfiguring == rhs.isConfiguring
+            && lhs.isSelected == rhs.isSelected && lhs.needsApproval == rhs.needsApproval
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 2) {

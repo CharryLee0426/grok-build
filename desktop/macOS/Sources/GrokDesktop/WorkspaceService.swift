@@ -1,6 +1,6 @@
 import Foundation
 
-struct GitFileChange: Identifiable, Sendable {
+struct GitFileChange: Identifiable, Equatable, Sendable {
     var id: String { path }
     let path: String
     /// Git's two-column index/worktree status, for example `M `, ` M`, or `??`.
@@ -10,7 +10,7 @@ struct GitFileChange: Identifiable, Sendable {
     let isBinary: Bool
 }
 
-struct GitWorkspaceSnapshot: Sendable {
+struct GitWorkspaceSnapshot: Equatable, Sendable {
     let branch: String
     let changes: [GitFileChange]
     let rootPath: String?

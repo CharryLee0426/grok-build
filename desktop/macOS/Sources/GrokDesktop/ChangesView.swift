@@ -40,16 +40,9 @@ struct ChangesView: View {
                 if let selected = store.selectedFile {
                     Divider().overlay(Theme.line)
                     HStack { Text(URL(fileURLWithPath: selected).lastPathComponent).font(.system(size: 13, weight: .medium)).lineLimit(1); Spacer(); IconButton(icon: "xmark", help: "Close diff") { store.selectedFile = nil } }.padding(.horizontal, 18).padding(.vertical, 8)
-                    ScrollView([.vertical, .horizontal]) {
-                        VStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(store.diffText.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
-                                Text(line.isEmpty ? " " : line).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
-                                    .foregroundStyle(line.hasPrefix("+") ? Theme.green : line.hasPrefix("-") ? Color.red.opacity(0.8) : line.hasPrefix("@@") ? Theme.accent : Theme.muted)
-                                    .padding(.vertical, 2).padding(.horizontal, 12).frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(line.hasPrefix("+") ? Theme.green.opacity(0.07) : line.hasPrefix("-") ? Color.red.opacity(0.06) : .clear)
-                            }
-                        }
-                    }.frame(maxHeight: .infinity)
+                    // Up to 1 MiB of diff: one text view draws only the visible lines.
+                    ReadOnlyTextView(text: store.diffText, style: .diff, wrapsLines: false, sizing: .fill)
+                        .frame(maxHeight: .infinity)
                 }
             }
             Spacer(minLength: 0)

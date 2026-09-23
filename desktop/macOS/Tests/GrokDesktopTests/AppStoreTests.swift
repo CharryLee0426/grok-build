@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import GrokDesktop
 
@@ -11,7 +12,8 @@ final class AppStoreTests: XCTestCase {
         let store: AppStore
         let conversationID: UUID
 
-        init(firstLoad: String, existingMessages: [Message] = [], advertiseAuth: Bool = true, configDelay: Double = 0, rejectConfig: Bool = false) throws {
+        init(firstLoad: String, existingMessages: [Message] = [], advertiseAuth: Bool = true, configDelay: Double = 0, rejectConfig: Bool = false,
+             prompt: String = #"chunk("agent_message_chunk", "New answer")"#) throws {
             guard FileManager.default.isExecutableFile(atPath: "/usr/bin/python3") else { throw XCTSkip("Requires /usr/bin/python3") }
             directory = FileManager.default.temporaryDirectory.appendingPathComponent("grok-store-tests-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -76,7 +78,7 @@ for line in sys.stdin:
         chunk("agent_message_chunk", "Complete answer")
         reply(request, {"models": models(), **config()})
     elif method == "session/prompt":
-        chunk("agent_message_chunk", "New answer")
+        PROMPT
         reply(request, {"stopReason": "end_turn"})
     elif method is not None and "id" in request:
         emit({"jsonrpc": "2.0", "id": request["id"], "error": {"code": -32601, "message": "Unsupported fixture method"}})
@@ -85,6 +87,7 @@ for line in sys.stdin:
                 .replacingOccurrences(of: "REJECT_CONFIG", with: rejectConfig ? "True" : "False")
                 .replacingOccurrences(of: "ADVERTISE_AUTH", with: advertiseAuth ? "True" : "False")
                 .replacingOccurrences(of: "FIRST_LOAD", with: firstLoad.replacingOccurrences(of: "\n", with: "\n            "))
+                .replacingOccurrences(of: "PROMPT", with: prompt.replacingOccurrences(of: "\n", with: "\n        "))
             try source.write(to: executable, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
             store = AppStore(stateFile: directory.appendingPathComponent("state.json"), defaults: defaults, binaryPath: executable.path)
@@ -261,6 +264,45 @@ time.sleep(20)
         XCTAssertEqual(store.run.phase, "Ready")
         XCTAssertEqual(store.conversation!.messages.map(\.text), ["Original question", "Complete answer", "Follow up", "New answer"])
         XCTAssertEqual(fixture.requests.filter { $0["method"] as? String == "session/prompt" }.count, 1)
+    }
+
+    func testStreamedChunksAreBatchedAndCompleteWhenTheTurnEnds() async throws {
+        let fixture = try Fixture(firstLoad: "pass", prompt: """
+        for index in range(400):
+            chunk("agent_thought_chunk", f"step {index}; ")
+        for index in range(400):
+            chunk("agent_message_chunk", f"word{index} ")
+        """)
+        defer { fixture.cleanup() }
+        let store = fixture.store
+        var publishes = 0
+        let observer = store.objectWillChange.sink { publishes += 1 }
+        defer { observer.cancel() }
+        store.draft = "Think it through"
+        store.send()
+        try await eventually { !store.run.isRunning }
+        // Every chunk is present as soon as the turn is reported finished.
+        let messages = store.conversation!.messages
+        XCTAssertEqual(messages.map(\.kind), [.user, .assistant, .user, .thought, .assistant])
+        XCTAssertEqual(messages[3].text, (0..<400).map { "step \($0); " }.joined())
+        XCTAssertEqual(messages[4].text, (0..<400).map { "word\($0) " }.joined())
+        // 800 chunks must not mean 800 re-renders of every view observing the store.
+        XCTAssertLessThan(publishes, 100)
+    }
+
+    func testSaveWritesInBackgroundAndFlushWritesImmediately() async throws {
+        let fixture = try Fixture(firstLoad: "pass")
+        defer { fixture.cleanup() }
+        let store = fixture.store
+        let file = fixture.directory.appendingPathComponent("state.json")
+        store.state.conversations[0].title = "Saved in the background"
+        store.save()
+        try await eventually { (try? String(contentsOf: file, encoding: .utf8))?.contains("Saved in the background") == true }
+        store.state.conversations[0].title = "Flushed on demand"
+        store.save()
+        store.flush()
+        let saved = try JSONDecoder().decode(DesktopState.self, from: Data(contentsOf: file))
+        XCTAssertEqual(saved.conversations.map(\.title), ["Flushed on demand"])
     }
 
     func testPreparingReopenedTaskPopulatesModelsWithoutSendingPrompt() async throws {

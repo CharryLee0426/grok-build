@@ -1,12 +1,12 @@
 import Foundation
 
-struct Project: Identifiable, Codable, Equatable {
+struct Project: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
     var path: String
     var name: String { URL(fileURLWithPath: path).lastPathComponent }
 }
 
-struct Conversation: Identifiable, Codable {
+struct Conversation: Identifiable, Codable, Sendable {
     var id = UUID()
     var projectID: UUID
     var title: String = "New task"
@@ -19,8 +19,8 @@ struct Conversation: Identifiable, Codable {
     var reasoningID: String?
 }
 
-struct Message: Identifiable, Codable {
-    enum Kind: String, Codable { case user, assistant, thought, tool, system }
+struct Message: Identifiable, Codable, Sendable {
+    enum Kind: String, Codable, Sendable { case user, assistant, thought, tool, system }
     var id = UUID()
     var kind: Kind
     var text: String
@@ -140,7 +140,7 @@ struct RunState {
     var subagents: [SubagentState] = []
 }
 
-struct DesktopState: Codable {
+struct DesktopState: Codable, Sendable {
     var projects: [Project] = []
     var conversations: [Conversation] = []
     var selectedProjectID: UUID?

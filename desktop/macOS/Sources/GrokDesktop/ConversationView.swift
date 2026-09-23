@@ -9,6 +9,7 @@ struct ConversationView: View {
     @State private var showReasoning = false
     @State private var showModes = false
     @State private var showCompactOptions = false
+    @State private var showPlan = false
     @State private var modelSearch = ""
     @State private var selectedCommand = 0
     @State private var dismissedCommandDraft: String?
@@ -35,7 +36,14 @@ struct ConversationView: View {
                 if let approval = store.run.approvals.first { ApprovalCard(approval: approval) }
                 if let question = store.run.questions.first { QuestionCard(request: question).id(question.id) }
                 if !store.run.plan.isEmpty {
-                    DisclosureGroup {
+                    FoldableSection(isExpanded: $showPlan) {
+                        HStack {
+                            Image(systemName: "list.bullet.clipboard")
+                            Text("Plan")
+                            Spacer()
+                            Text("\(store.run.plan.filter { $0.status == "completed" }.count) of \(store.run.plan.count)").foregroundStyle(Theme.muted)
+                        }.font(.system(size: 13, weight: .medium))
+                    } content: {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(store.run.plan) { entry in
                                 HStack(alignment: .top, spacing: 8) {
@@ -44,15 +52,8 @@ struct ConversationView: View {
                                     Text(entry.content)
                                 }
                             }
-                        }.font(.system(size: 14)).padding(.vertical, 8)
-                    } label: {
-                        HStack {
-                            Image(systemName: "list.bullet.clipboard")
-                            Text("Plan")
-                            Spacer()
-                            Text("\(store.run.plan.filter { $0.status == "completed" }.count) of \(store.run.plan.count)").foregroundStyle(Theme.muted)
-                        }.font(.system(size: 13, weight: .medium))
-                    }.padding(12).background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 10))
+                        }.font(.system(size: 14)).padding(.leading, 42).padding(.trailing, 14).padding(.bottom, 12)
+                    }.background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 10))
                 }
                 composer
                 GeometryReader { geometry in
@@ -126,10 +127,12 @@ struct ConversationView: View {
     }
 
     private var transcript: some View {
-        ScrollViewReader { proxy in
+        let messages = store.conversation?.messages ?? []
+        let streamingID = store.run.isRunning ? messages.last?.id : nil
+        return ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: compactConversation ? 10 : 23) {
-                    ForEach(store.conversation?.messages ?? []) { message in MessageView(message: message) }
+                    ForEach(messages) { message in MessageView(message: message, isStreaming: message.id == streamingID).equatable() }
                     if store.run.isRunning {
                         HStack(spacing: 9) {
                             ProgressView().controlSize(.mini)
@@ -141,9 +144,10 @@ struct ConversationView: View {
                 }.frame(maxWidth: 800, alignment: .leading).padding(.horizontal, 36).padding(.top, 34).padding(.bottom, 15).frame(maxWidth: .infinity)
             }
             .defaultScrollAnchor(.bottom)
-            .onChange(of: store.conversation?.messages.last?.text) { _, _ in if followOutput { proxy.scrollTo("bottom", anchor: .bottom) } }
-            .onChange(of: store.conversation?.messages.count) { _, _ in if followOutput { proxy.scrollTo("bottom", anchor: .bottom) } }
+            // A revision number is cheap to compare; the streaming text itself can be megabytes.
+            .onChange(of: store.transcriptRevision(of: store.state.selectedConversationID)) { _, _ in if followOutput { proxy.scrollTo("bottom", anchor: .bottom) } }
             .onChange(of: store.state.selectedConversationID) { _, _ in followOutput = true; proxy.scrollTo("bottom", anchor: .bottom) }
+            .modifier(PauseFollowingWhileScrolling(followOutput: $followOutput))
             .overlay(alignment: .bottomTrailing) {
                 if store.run.isRunning {
                     Button { followOutput.toggle(); if followOutput { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
@@ -522,36 +526,123 @@ final class SubmitTextView: NSTextView {
     }
 }
 
-struct MessageView: View {
+struct MessageView: View, Equatable {
     let message: Message
+    /// This is the newest message of a turn that is still producing output.
+    var isStreaming = false
+    /// Past this size a prompt (usually pasted logs) is shown in a scrolling text view.
+    private static let longPromptBytes = 8_000
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        let a = lhs.message, b = rhs.message
+        return lhs.isStreaming == rhs.isStreaming && a.id == b.id && a.kind == b.kind && a.status == b.status && a.toolID == b.toolID
+            && same(a.text, b.text) && (a.detail == nil) == (b.detail == nil) && same(a.detail ?? "", b.detail ?? "")
+    }
+
+    /// Streamed text only grows, so the length usually settles it without reading the text.
+    private nonisolated static func same(_ lhs: String, _ rhs: String) -> Bool { lhs.utf8.count == rhs.utf8.count && lhs == rhs }
+
     var body: some View {
         switch message.kind {
         case .user:
-            HStack { Spacer(minLength: 48); Text(message.text).font(.system(size: 16)).textSelection(.enabled).padding(.horizontal, 17).padding(.vertical, 13).background(Theme.sidebar).clipShape(RoundedRectangle(cornerRadius: 16)) }
+            HStack {
+                Spacer(minLength: 48)
+                Group {
+                    if message.text.utf8.count > Self.longPromptBytes {
+                        ReadOnlyTextView(text: message.text, style: .body, sizing: .fitContent(maxHeight: 420))
+                    } else {
+                        Text(message.text).font(.system(size: 16)).textSelection(.enabled)
+                    }
+                }.padding(.horizontal, 17).padding(.vertical, 13).background(Theme.sidebar).clipShape(RoundedRectangle(cornerRadius: 16))
+            }
         case .assistant:
             VStack(alignment: .leading, spacing: 12) {
                 HStack(spacing: 7) { GrokMark(size: 18); Text("Grok").font(.system(size: 13, weight: .semibold)) }
                 MarkdownContent(text: message.text)
             }
         case .thought:
-            DisclosureGroup { Text(message.text).font(.system(size: 14)).foregroundStyle(Theme.muted).textSelection(.enabled).padding(.top, 8) }
-                label: { Label("Thinking", systemImage: "sparkle").font(.system(size: 13)).foregroundStyle(Theme.muted) }
+            ThoughtView(message: message, isStreaming: isStreaming)
         case .tool:
-            DisclosureGroup {
-                if let detail = message.detail, !detail.isEmpty {
-                    ScrollView([.horizontal, .vertical]) { Text(detail).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 230).padding(.top, 10)
-                } else { Text("No additional output.").font(.system(size: 13)).foregroundStyle(Theme.muted).padding(.top, 8) }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: message.status == "completed" ? "checkmark.circle" : message.status == "failed" ? "xmark.circle" : "terminal")
-                        .foregroundStyle(message.status == "failed" ? .red : Theme.muted)
-                    Text(message.text).lineLimit(2)
-                    Spacer()
-                    Text((message.status ?? "pending").replacingOccurrences(of: "_", with: " ")).font(.system(size: 12)).foregroundStyle(Theme.muted)
-                }.font(.system(size: 14))
-            }.padding(13).background(Theme.sidebar.opacity(0.65)).clipShape(RoundedRectangle(cornerRadius: 9))
+            ToolCallView(message: message)
         case .system:
             HStack(alignment: .top, spacing: 9) { Image(systemName: "exclamationmark.circle"); Text(message.text).textSelection(.enabled) }.font(.system(size: 14)).foregroundStyle(Theme.muted).padding(13).background(Theme.sidebar).clipShape(RoundedRectangle(cornerRadius: 9))
+        }
+    }
+}
+
+private struct ThoughtView: View {
+    let message: Message
+    let isStreaming: Bool
+    @State private var isExpanded = false
+
+    var body: some View {
+        FoldableSection(isExpanded: $isExpanded) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkle")
+                Text(isStreaming ? "Thinking…" : "Thinking").fontWeight(.medium).layoutPriority(1)
+                if isStreaming && !isExpanded {
+                    // A glimpse of the newest reasoning, without laying out the rest of it.
+                    Text(Self.latestLine(of: message.text)).lineLimit(1).truncationMode(.head).opacity(0.75)
+                }
+                Spacer(minLength: 0)
+            }.font(.system(size: 13)).foregroundStyle(Theme.muted)
+        } content: {
+            ReadOnlyTextView(text: message.text, style: .prose, sizing: .fitContent(maxHeight: 360), followsTail: isStreaming)
+                .padding(.leading, 42).padding(.trailing, 14).padding(.bottom, 12)
+        }
+        .background(Theme.sidebar.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    static func latestLine(of text: String) -> String {
+        let tail = text.suffix(240)
+        return tail.split(whereSeparator: \.isNewline).last.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+    }
+}
+
+private struct ToolCallView: View {
+    let message: Message
+    @State private var isExpanded = false
+
+    var body: some View {
+        FoldableSection(isExpanded: $isExpanded) {
+            HStack(spacing: 8) {
+                Image(systemName: message.status == "completed" ? "checkmark.circle" : message.status == "failed" ? "xmark.circle" : "terminal")
+                    .foregroundStyle(message.status == "failed" ? .red : Theme.muted)
+                Text(message.text).lineLimit(2)
+                Spacer()
+                Text((message.status ?? "pending").replacingOccurrences(of: "_", with: " ")).font(.system(size: 12)).foregroundStyle(Theme.muted)
+            }.font(.system(size: 14))
+        } content: {
+            Group {
+                if let detail = message.detail, !detail.isEmpty {
+                    ReadOnlyTextView(text: detail, style: .monospaced, wrapsLines: false, sizing: .fitContent(maxHeight: 260))
+                } else {
+                    Text("No additional output.").font(.system(size: 13)).foregroundStyle(Theme.muted)
+                }
+            }.padding(.horizontal, 14).padding(.bottom, 12)
+        }
+        .background(Theme.sidebar.opacity(0.65), in: RoundedRectangle(cornerRadius: 9))
+    }
+}
+
+/// Stops following streamed output while the reader scrolls, and resumes it when they
+/// come to rest at the end of the transcript.
+private struct PauseFollowingWhileScrolling: ViewModifier {
+    @Binding var followOutput: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.onScrollPhaseChange { _, phase, context in
+                switch phase {
+                case .interacting: followOutput = false
+                case .idle:
+                    let geometry = context.geometry
+                    followOutput = geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 40
+                default: break
+                }
+            }
+        } else {
+            content
         }
     }
 }
@@ -559,42 +650,62 @@ struct MessageView: View {
 struct MarkdownContent: View {
     var text: String
     var body: some View {
+        // Blocks are equatable: while a reply streams only its last block changes, so earlier
+        // paragraphs are not parsed and laid out again for every chunk.
         VStack(alignment: .leading, spacing: 12) {
             ForEach(Array(text.components(separatedBy: "```").enumerated()), id: \.offset) { index, part in
                 if index % 2 == 1 {
-                    let lines = part.components(separatedBy: "\n")
-                    let code = lines.dropFirst().joined(separator: "\n").trimmingCharacters(in: .newlines)
-                    VStack(alignment: .leading, spacing: 0) {
-                        HStack {
-                            Text(lines.first ?? "code").font(.system(size: 12, design: .monospaced))
-                            Spacer()
-                            Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(code, forType: .string) } label: { Label("Copy", systemImage: "doc.on.doc").font(.system(size: 12)) }.buttonStyle(.plain)
-                        }.foregroundStyle(Theme.muted).padding(11)
-                        Divider()
-                        ScrollView(.horizontal) { Text(code).font(.system(size: 14, design: .monospaced)).textSelection(.enabled).padding(13).frame(maxWidth: .infinity, alignment: .leading) }
-                    }.background(Theme.sidebar).clipShape(RoundedRectangle(cornerRadius: 9))
+                    MarkdownCodeBlock(source: part).equatable()
                 } else if !part.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     VStack(alignment: .leading, spacing: 13) {
                         ForEach(Array(part.trimmingCharacters(in: .newlines).components(separatedBy: "\n\n").enumerated()), id: \.offset) { _, paragraph in
-                            if paragraph.hasPrefix("#") {
-                                let marks = paragraph.prefix(while: { $0 == "#" }).count
-                                Text(tryAttributed(String(paragraph.dropFirst(marks)).trimmingCharacters(in: .whitespaces)))
-                                    .font(.system(size: marks == 1 ? 25 : marks == 2 ? 21 : 18, weight: .semibold)).padding(.top, 4)
-                            } else if paragraph.hasPrefix("> ") {
-                                Text(tryAttributed(paragraph.components(separatedBy: "\n").map { $0.hasPrefix("> ") ? String($0.dropFirst(2)) : $0 }.joined(separator: "\n")))
-                                    .font(.system(size: 16)).foregroundStyle(Theme.muted).padding(.leading, 13)
-                                    .overlay(alignment: .leading) { Theme.accent.opacity(0.4).frame(width: 2) }
-                            } else {
-                                Text(tryAttributed(paragraph)).font(.system(size: 16))
-                            }
+                            MarkdownParagraph(text: paragraph).equatable()
                         }
                     }.lineSpacing(5).textSelection(.enabled).tint(Theme.accent)
                 }
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
-    private func tryAttributed(_ value: String) -> AttributedString {
+}
+
+private struct MarkdownParagraph: View, Equatable {
+    let text: String
+
+    var body: some View {
+        if text.hasPrefix("#") {
+            let marks = text.prefix(while: { $0 == "#" }).count
+            Text(Self.attributed(String(text.dropFirst(marks)).trimmingCharacters(in: .whitespaces)))
+                .font(.system(size: marks == 1 ? 25 : marks == 2 ? 21 : 18, weight: .semibold)).padding(.top, 4)
+        } else if text.hasPrefix("> ") {
+            Text(Self.attributed(text.components(separatedBy: "\n").map { $0.hasPrefix("> ") ? String($0.dropFirst(2)) : $0 }.joined(separator: "\n")))
+                .font(.system(size: 16)).foregroundStyle(Theme.muted).padding(.leading, 13)
+                .overlay(alignment: .leading) { Theme.accent.opacity(0.4).frame(width: 2) }
+        } else {
+            Text(Self.attributed(text)).font(.system(size: 16))
+        }
+    }
+
+    private static func attributed(_ value: String) -> AttributedString {
         (try? AttributedString(markdown: value.trimmingCharacters(in: .newlines), options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace))) ?? AttributedString(value)
+    }
+}
+
+private struct MarkdownCodeBlock: View, Equatable {
+    let source: String
+
+    var body: some View {
+        let newline = source.firstIndex(of: "\n") ?? source.endIndex
+        let language = source[..<newline].trimmingCharacters(in: .whitespaces)
+        let code = newline < source.endIndex ? source[source.index(after: newline)...].trimmingCharacters(in: .newlines) : ""
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(language.isEmpty ? "code" : language).font(.system(size: 12, design: .monospaced))
+                Spacer()
+                Button { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(code, forType: .string) } label: { Label("Copy", systemImage: "doc.on.doc").font(.system(size: 12)) }.buttonStyle(.plain)
+            }.foregroundStyle(Theme.muted).padding(11)
+            Divider()
+            ScrollView(.horizontal) { Text(code).font(.system(size: 14, design: .monospaced)).textSelection(.enabled).padding(13).frame(maxWidth: .infinity, alignment: .leading) }
+        }.background(Theme.sidebar).clipShape(RoundedRectangle(cornerRadius: 9))
     }
 }
 
@@ -604,7 +715,7 @@ struct ApprovalCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label(approval.title, systemImage: "hand.raised").font(.system(size: 15, weight: .semibold))
-            ScrollView { Text(approval.detail).font(.system(size: 13, design: .monospaced)).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading) }.frame(maxHeight: 120)
+            ReadOnlyTextView(text: approval.detail, style: .monospaced, sizing: .fitContent(maxHeight: 120))
             HStack {
                 Spacer()
                 ForEach(approval.options) { option in
