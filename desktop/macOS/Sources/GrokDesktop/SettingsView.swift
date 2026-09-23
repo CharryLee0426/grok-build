@@ -4,7 +4,6 @@ import AppKit
 struct SettingsView: View {
     @EnvironmentObject var store: AppStore
     @Environment(\.dismiss) private var dismiss
-    @AppStorage("appearance") private var appearance = "system"
     @StateObject private var accounts = AccountStore()
     @State private var signingIn: AccountProvider?
 
@@ -22,20 +21,7 @@ struct SettingsView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Label("Appearance", systemImage: "circle.lefthalf.filled")
-                            .font(.system(size: 15, weight: .semibold))
-                        Picker("Appearance", selection: $appearance) {
-                            Text("System").tag("system")
-                            Text("Light").tag("light")
-                            Text("Dark").tag("dark")
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .controlSize(.large)
-                    }
-                    .padding(18)
-                    .glassSurface(cornerRadius: 18)
+                    AppearanceSettingsSection().settingsCard()
 
                     VStack(alignment: .leading, spacing: 14) {
                         HStack {
@@ -75,9 +61,12 @@ struct SettingsView: View {
                             }
                             .font(.system(size: 13))
                         }
+                        AccountSettingsExtras()
                     }
                     .padding(18)
                     .glassSurface(cornerRadius: 18)
+                    DisplaySettingsSection()
+                    BehaviorSettingsSection()
                 }
                 .padding(3)
             }
@@ -101,7 +90,7 @@ struct SettingsView: View {
             }
         }
         .padding(24)
-        .frame(width: 620, height: 600)
+        .frame(width: 660, height: 680)
         .foregroundStyle(Theme.ink)
         .background(Theme.canvas)
         .onAppear { accounts.refresh() }
@@ -148,5 +137,12 @@ struct SettingsView: View {
             }
         }
         .padding(.vertical, 10)
+    }
+}
+
+extension View {
+    /// The rounded glass card that holds one group of settings.
+    func settingsCard() -> some View {
+        padding(18).frame(maxWidth: .infinity, alignment: .leading).glassSurface(cornerRadius: 18)
     }
 }

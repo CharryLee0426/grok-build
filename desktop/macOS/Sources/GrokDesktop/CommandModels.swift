@@ -8,7 +8,11 @@ struct SlashCommand: Identifiable, Equatable {
     var source: String = "Harness"
     var aliases: [String] = []
     var skillPath: String? = nil
+    /// Hidden commands run when typed but are never listed, as in the terminal.
+    var isHidden = false
     var isSkill: Bool { skillPath != nil }
+    /// Commands whose arguments are required are completed in the composer rather than run.
+    var requiresArguments: Bool { argumentHint?.hasPrefix("<") == true }
 
     static func parse(_ values: [[String: Any]]) -> [SlashCommand] {
         values.compactMap { item in
@@ -33,7 +37,7 @@ struct SlashCommand: Identifiable, Equatable {
 }
 
 enum FeaturePanel: String, CaseIterable, Identifiable {
-    case mcps, skills, agents, agentDefinitions, goals, workflows, plugins, hooks, memory, personas, plan, models, reasoning, history, transcript
+    case mcps, skills, agents, agentDefinitions, goals, workflows, plugins, marketplace, hooks, memory, personas, plan, models, reasoning, history, transcript
     var id: String { rawValue }
     var title: String {
         switch self {

@@ -49,7 +49,9 @@ cat > "$app_dir/Contents/Info.plist" <<'PLIST'
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSMicrophoneUsageDescription</key><string>Grok Desktop uses the microphone only while you dictate a prompt.</string>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSSpeechRecognitionUsageDescription</key><string>When your account has no xAI voice credential, Grok Desktop transcribes your dictation on this Mac.</string>
 </dict>
 </plist>
 PLIST

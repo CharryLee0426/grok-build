@@ -27,6 +27,8 @@ struct Message: Identifiable, Codable, Sendable {
     var toolID: String?
     var status: String?
     var detail: String?
+    /// When the message began streaming or was sent; unknown for replayed history.
+    var createdAt: Date?
 }
 
 struct ModelOption: Identifiable, Equatable {
@@ -148,12 +150,14 @@ struct DesktopState: Codable, Sendable {
     var selectedModelID: String?
     var selectedReasoningID: String?
     var deletedSessionIDs: Set<String> = []
+    /// Project folders the user folded in the sidebar. Folders are expanded by default.
+    var collapsedProjectIDs: Set<UUID> = []
 }
 
 extension DesktopState {
     private enum CodingKeys: String, CodingKey {
         case projects, conversations, selectedProjectID, selectedConversationID
-        case selectedModelID, selectedReasoningID, deletedSessionIDs
+        case selectedModelID, selectedReasoningID, deletedSessionIDs, collapsedProjectIDs
     }
 
     init(from decoder: Decoder) throws {
@@ -165,6 +169,7 @@ extension DesktopState {
         selectedModelID = try values.decodeIfPresent(String.self, forKey: .selectedModelID)
         selectedReasoningID = try values.decodeIfPresent(String.self, forKey: .selectedReasoningID)
         deletedSessionIDs = try values.decodeIfPresent(Set<String>.self, forKey: .deletedSessionIDs) ?? []
+        collapsedProjectIDs = try values.decodeIfPresent(Set<UUID>.self, forKey: .collapsedProjectIDs) ?? []
     }
 }
 
@@ -201,7 +206,7 @@ enum TranscriptReducer {
         return ""
     }
 
-    static func apply(_ update: [String: Any], to messages: inout [Message]) {
+    static func apply(_ update: [String: Any], to messages: inout [Message], date: Date? = nil) {
         let kind = update["sessionUpdate"] as? String ?? ""
         switch kind {
         case "agent_message_chunk", "agent_thought_chunk", "user_message_chunk":
@@ -209,7 +214,7 @@ enum TranscriptReducer {
             let content = text(from: update["content"] as? [String: Any] ?? [:])
             guard !content.isEmpty else { return }
             if messages.last?.kind == role { messages[messages.count - 1].text += content }
-            else { messages.append(Message(kind: role, text: content)) }
+            else { messages.append(Message(kind: role, text: content, createdAt: date)) }
         case "tool_call", "tool_call_update":
             guard let id = update["toolCallId"] as? String else { return }
             let contents = update["content"] as? [[String: Any]] ?? []
@@ -226,7 +231,7 @@ enum TranscriptReducer {
                 if !detail.isEmpty { messages[index].detail = detail }
             } else {
                 messages.append(Message(kind: .tool, text: update["title"] as? String ?? "Tool call", toolID: id,
-                                        status: update["status"] as? String ?? "pending", detail: detail))
+                                        status: update["status"] as? String ?? "pending", detail: detail, createdAt: date))
             }
         default: break
         }

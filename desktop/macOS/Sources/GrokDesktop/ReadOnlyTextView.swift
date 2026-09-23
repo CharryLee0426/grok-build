@@ -8,7 +8,7 @@ import AppKit
 /// collapsing it) can bring the app down. This view uses TextKit 1 with a height cap: streamed
 /// suffixes are appended, only new text is laid out, and only the visible region is drawn.
 struct ReadOnlyTextView: NSViewRepresentable {
-    enum Style {
+    enum Style: Equatable {
         /// Secondary 14 pt text, as for reasoning.
         case prose
         /// Primary 16 pt text, as for prompts.
@@ -16,6 +16,10 @@ struct ReadOnlyTextView: NSViewRepresentable {
         case monospaced
         /// Monospaced unified diff with coloured additions, removals, and hunk headers.
         case diff
+        /// Secondary 14 pt Markdown with tables, code, and math, as for reasoning.
+        case markdown
+        /// Monospaced code, syntax-highlighted when a language is given.
+        case code(language: String?)
     }
     enum Sizing: Equatable {
         /// Grow with the content up to a cap, then scroll internally.
@@ -42,7 +46,7 @@ struct ReadOnlyTextView: NSViewRepresentable {
         container.lineFragmentPadding = style == .diff ? 12 : 0
         layoutManager.addTextContainer(container)
 
-        let textView = NSTextView(frame: .zero, textContainer: container)
+        let textView = MarkdownSourceTextView(frame: .zero, textContainer: container)
         textView.isEditable = false
         textView.isSelectable = true
         textView.isRichText = false
@@ -50,6 +54,7 @@ struct ReadOnlyTextView: NSViewRepresentable {
         textView.allowsUndo = false
         textView.drawsBackground = false
         textView.textContainerInset = NSSize(width: 0, height: 2)
+        textView.linkTextAttributes = [.foregroundColor: Theme.accentNS, .cursor: NSCursor.pointingHand]
         textView.minSize = .zero
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
@@ -61,6 +66,7 @@ struct ReadOnlyTextView: NSViewRepresentable {
         scroll.autohidesScrollers = true
         scroll.documentView = textView
         context.coordinator.attach(scroll: scroll, textView: textView)
+        textView.onAppearanceChange = { [weak coordinator = context.coordinator] in coordinator?.appearanceChanged() }
         configureWrapping(context.coordinator)
         return scroll
     }
@@ -105,6 +111,12 @@ struct ReadOnlyTextView: NSViewRepresentable {
         private var applied = ""
         private var appliedStyle: Style?
         private var pendingScrollToEnd = false
+        private var followsTail = false
+        /// Markdown is rendered block by block; a streamed update replaces only changed blocks.
+        private let markdown = MarkdownDocumentCache()
+        private var renderedBlocks: [MarkdownBlock] = []
+        private var blockOffsets: [Int] = []
+        private var renderedDark: Bool?
         /// Sizes the view without touching the displayed layout, whose container follows the
         /// text view's width (zero, and so unbounded, until SwiftUI first places it). Only a
         /// prefix is measured: far less text than this already fills any height cap, and laying
@@ -128,19 +140,39 @@ struct ReadOnlyTextView: NSViewRepresentable {
             // Contiguous layout keeps appends incremental and tail-following exact. Static
             // text only needs its visible region laid out, however long it is.
             if layoutManager.allowsNonContiguousLayout == followsTail { layoutManager.allowsNonContiguousLayout = !followsTail }
+            self.followsTail = followsTail
             guard style != appliedStyle || text != applied else { return }
             // Following text starts at its end, then stays there until the reader scrolls away.
             let wasAtEnd = appliedStyle == nil || isScrolledToEnd
-            let appended = style == appliedStyle && style != .diff ? TextDelta.appendedSuffix(from: applied, to: text) : nil
-            if let appended {
-                storage.append(NSAttributedString(string: appended, attributes: Self.attributes(for: style)))
+            var appended: String?
+            /// Where a Markdown update began to differ from what was shown, if it did.
+            var markdownChange: Int?
+            if style == .markdown {
+                if appliedStyle != .markdown { renderedBlocks = []; blockOffsets = [] }
+                markdownChange = renderMarkdown(text, into: storage)
             } else {
-                storage.setAttributedString(Self.attributedString(text, style: style))
+                appended = style == appliedStyle && style != .diff && !style.isHighlightedCode ? TextDelta.appendedSuffix(from: applied, to: text) : nil
+                if let appended {
+                    storage.append(NSAttributedString(string: appended, attributes: Self.attributes(for: style)))
+                } else {
+                    storage.setAttributedString(Self.attributedString(text, style: style))
+                }
             }
             // The measured text is the displayed text's first `measuredPrefix` characters. Appends
             // extend it until it is full, and after that leave it and its layout untouched.
             let prefix = min(storage.length, Self.measuredPrefix)
-            if appended == nil {
+            if style == .markdown {
+                // Streamed Markdown changes only its last blocks; past the measured prefix nothing
+                // that sizes the view changed, so the measuring layout is kept.
+                if let change = markdownChange, change < measuringStorage.length || measuringStorage.length > prefix {
+                    measuringStorage.setAttributedString(storage.attributedSubstring(from: NSRange(location: 0, length: prefix)))
+                    measuredHeights.removeAll()
+                } else if markdownChange != nil, measuringStorage.length < prefix {
+                    let start = measuringStorage.length
+                    measuringStorage.append(storage.attributedSubstring(from: NSRange(location: start, length: prefix - start)))
+                    measuredHeights.removeAll()
+                }
+            } else if appended == nil {
                 measuringStorage.setAttributedString(storage.attributedSubstring(from: NSRange(location: 0, length: prefix)))
                 measuredHeights.removeAll()
             } else if measuringStorage.length < prefix {
@@ -151,6 +183,40 @@ struct ReadOnlyTextView: NSViewRepresentable {
             applied = text
             appliedStyle = style
             if followsTail && wasAtEnd { scrollToEnd() }
+        }
+
+        /// Replaces the rendering from the first block that changed to the end.
+        /// Returns the offset where the rendering changed, or nil when nothing did.
+        @discardableResult
+        private func renderMarkdown(_ text: String, into storage: NSTextStorage) -> Int? {
+            let blocks = markdown.blocks(for: text)
+            let dark = textView?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            if renderedDark != dark { renderedBlocks = []; blockOffsets = []; renderedDark = dark }
+            var first = 0
+            while first < blocks.count, first < renderedBlocks.count, blocks[first] == renderedBlocks[first] { first += 1 }
+            if first == blocks.count, first == renderedBlocks.count, storage.length > 0 || blocks.isEmpty { return nil }
+            let start = first < blockOffsets.count ? blockOffsets[first] : storage.length
+            let renderer = MarkdownAttributedRenderer(fontSize: 14, color: .secondaryLabelColor, dark: dark)
+            let tail = NSMutableAttributedString()
+            var offsets = Array(blockOffsets.prefix(first))
+            for index in first..<blocks.count {
+                offsets.append(start + tail.length)
+                tail.append(renderer.render(blocks[index], isFirst: index == 0))
+            }
+            storage.beginEditing()
+            storage.replaceCharacters(in: NSRange(location: start, length: storage.length - start), with: tail)
+            storage.endEditing()
+            renderedBlocks = blocks
+            blockOffsets = offsets
+            return start
+        }
+
+        /// Math is drawn for one appearance, so Markdown renders again when it changes.
+        func appearanceChanged() {
+            guard appliedStyle == .markdown, let storage = textView?.textStorage else { return }
+            renderMarkdown(applied, into: storage)
+            measuringStorage.setAttributedString(storage.attributedSubstring(from: NSRange(location: 0, length: min(storage.length, Self.measuredPrefix))))
+            measuredHeights.removeAll()
         }
 
         func height(forWidth width: CGFloat, cap: CGFloat) -> CGFloat {
@@ -204,13 +270,21 @@ struct ReadOnlyTextView: NSViewRepresentable {
             case .body:
                 paragraph.lineSpacing = 3
                 return [.font: NSFont.systemFont(ofSize: 16), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
-            case .monospaced, .diff:
-                paragraph.lineSpacing = 2
+            case .monospaced, .diff, .code:
+                paragraph.lineSpacing = style == .monospaced ? 2 : 3
                 return [.font: NSFont.monospacedSystemFont(ofSize: style == .diff ? 12 : 13, weight: .regular), .foregroundColor: NSColor.labelColor, .paragraphStyle: paragraph]
+            case .markdown:
+                paragraph.lineSpacing = 3
+                return [.font: NSFont.systemFont(ofSize: 14), .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: paragraph]
             }
         }
 
         static func attributedString(_ text: String, style: Style) -> NSAttributedString {
+            if case .code(let id?) = style, let language = SyntaxHighlighter.language(for: id) {
+                let result = NSMutableAttributedString(attributedString: SyntaxHighlighter.attributedString(text, language: language, font: .monospacedSystemFont(ofSize: 13, weight: .regular)))
+                result.addAttribute(.paragraphStyle, value: attributes(for: style)[.paragraphStyle]!, range: NSRange(location: 0, length: result.length))
+                return result
+            }
             let result = NSMutableAttributedString(string: text, attributes: attributes(for: style))
             guard style == .diff else { return result }
             let source = result.string as NSString
@@ -222,6 +296,40 @@ struct ReadOnlyTextView: NSViewRepresentable {
             }
             return result
         }
+    }
+}
+
+private extension ReadOnlyTextView.Style {
+    var isHighlightedCode: Bool { if case .code(let language) = self { return language != nil }; return false }
+}
+
+/// Copies typeset math as its LaTeX source, and reports appearance changes so math redraws.
+final class MarkdownSourceTextView: NSTextView {
+    var onAppearanceChange: (() -> Void)?
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        onAppearanceChange?()
+    }
+
+    override func writeSelection(to pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        guard type == .string, let storage = textStorage else { return super.writeSelection(to: pboard, type: type) }
+        let text = NSMutableString()
+        for value in selectedRanges {
+            let range = value.rangeValue
+            guard range.length > 0 else { continue }
+            if text.length > 0 { text.append("\n") }
+            storage.enumerateAttribute(MarkdownAttributedRenderer.latexAttribute, in: range) { latex, run, _ in
+                if let latex = latex as? String {
+                    text.append(latex)
+                } else {
+                    // Line separators stand for soft breaks.
+                    text.append(storage.attributedSubstring(from: run).string.replacingOccurrences(of: "\u{2028}", with: "\n"))
+                }
+            }
+        }
+        guard text.length > 0 else { return super.writeSelection(to: pboard, type: type) }
+        return pboard.setString(text as String, forType: .string)
     }
 }
 

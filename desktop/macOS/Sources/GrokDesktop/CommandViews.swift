@@ -1,105 +1,21 @@
 import SwiftUI
 import AppKit
 
-extension Notification.Name {
-    static let grokFocusComposer = Notification.Name("ai.grok.desktop.focus-composer")
-}
-
-struct CommandList: View {
-    let commands: [SlashCommand]
-    var selected: Int
-    var onSelect: (SlashCommand) -> Void
-
-    var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 2) {
-                    ForEach(Array(commands.enumerated()), id: \.element.id) { index, command in
-                        Button { onSelect(command) } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: command.symbol).font(.system(size: 16)).foregroundStyle(Theme.muted).frame(width: 24)
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack(spacing: 8) {
-                                        Text("/" + command.name).font(.system(size: 14, weight: .medium))
-                                        if let hint = command.argumentHint { Text(hint).font(.system(size: 12)).foregroundStyle(Theme.muted).lineLimit(1) }
-                                    }
-                                    Text(command.description).font(.system(size: 12)).foregroundStyle(Theme.muted).lineLimit(2)
-                                }
-                                Spacer(minLength: 4)
-                                Text(command.source).font(.system(size: 10, weight: .medium)).foregroundStyle(Theme.muted)
-                                    .padding(.horizontal, 6).padding(.vertical, 3).background(Theme.sidebar, in: Capsule())
-                            }.padding(.horizontal, 12).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
-                                .background(index == selected ? Theme.hover : .clear, in: RoundedRectangle(cornerRadius: 8))
-                                .contentShape(Rectangle())
-                        }.buttonStyle(.plain).id(command.id)
-                            .accessibilityLabel("/\(command.name). \(command.description). \(command.source)")
-                    }
-                    if commands.isEmpty { Text("No matching commands").font(.system(size: 14)).foregroundStyle(Theme.muted).padding(30) }
-                }.padding(6)
-            }
-            .onChange(of: selected) { _, value in
-                if commands.indices.contains(value) { proxy.scrollTo(commands[value].id) }
-            }
-        }
-    }
-}
-
-struct CommandPalette: View {
-    @EnvironmentObject var store: AppStore
-    @State private var query = ""
-    @State private var selected = 0
-    private var commands: [SlashCommand] { DesktopCommands.matches(store.availableCommands, query: query) }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                NativeSearchField(text: $query, placeholder: "Search commands and skills", onEscape: { store.showCommandPalette = false },
-                                  onSubmit: accept, onMove: move).frame(height: 40)
-                Text("esc").font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.muted)
-                    .padding(.horizontal, 6).padding(.vertical, 4)
-                    .background(Theme.canvas, in: RoundedRectangle(cornerRadius: 5))
-            }.padding(20)
-            Divider()
-            CommandList(commands: commands, selected: selected, onSelect: choose).frame(height: 370)
-            Divider()
-            HStack {
-                Text("\(commands.count) commands")
-                Spacer()
-                Text("↑↓ Navigate   ↵ Select")
-            }.font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.horizontal, 20).padding(.vertical, 14)
-        }.frame(width: 660).background(Theme.surface)
-            .onChange(of: query) { _, _ in selected = 0 }
-            .task { await store.refreshCommands() }
-    }
-
-    private func move(_ delta: Int) { selected = min(max(0, selected + delta), max(0, commands.count - 1)) }
-    private func accept() { if commands.indices.contains(selected) { choose(commands[selected]) } }
-    private func choose(_ command: SlashCommand) {
-        store.showCommandPalette = false
-        if command.argumentHint != nil && !["plan", "plugins", "model", "effort", "theme", "cd"].contains(command.name) {
-            store.draft = "/\(command.name) "
-            DispatchQueue.main.async { NotificationCenter.default.post(name: .grokFocusComposer, object: nil) }
-        } else {
-            // Dismiss this sheet before presenting a destination sheet.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { store.executeCommand(name: command.name) }
-        }
-    }
-}
-
 extension FeaturePanel {
     var subtitle: String {
         switch self {
         case .mcps: return "Connect Grok to tools and data in your workspace."
         case .skills: return "Reusable instructions, discovered from your project and plugins."
         case .agents: return "Follow the agents working alongside this task."
-        case .agentDefinitions: return "Agent roles available to the harness."
-        case .personas: return "Specialized instructions for agents."
+        case .agentDefinitions: return "Agent roles available to the harness. Changes apply to new sessions."
+        case .personas: return "Specialized instructions for subagents."
         case .goals: return "Keep working toward an objective across turns."
         case .plan: return "Review the steps before implementation."
         case .workflows: return "Launch a workflow or check its progress."
         case .plugins: return "Extensions loaded by your Grok harness."
+        case .marketplace: return "Plugins available from your marketplace sources."
         case .hooks: return "Actions triggered by events in the harness."
-        case .memory: return "Saved knowledge available to this task."
+        case .memory: return "What Grok remembers across sessions, for this task's workspace and everywhere."
         case .models: return "Choose the model for your next message."
         case .reasoning: return "Control how much the selected model thinks."
         case .history: return "Choose a prompt to reuse it in the composer."
@@ -107,10 +23,13 @@ extension FeaturePanel {
         }
     }
     var isLocal: Bool { [.plan, .models, .reasoning, .history, .transcript].contains(self) }
+    /// Panels whose content is drawn by a dedicated view rather than generic rows.
+    var hasDedicatedView: Bool { [.plugins, .hooks, .skills, .workflows, .marketplace, .agentDefinitions, .personas].contains(self) }
 }
 
 struct FeatureBrowser: View {
     @EnvironmentObject var store: AppStore
+    @EnvironmentObject var extensions: ExtensionFeatureModel
     let panel: FeaturePanel
     @State private var search = ""
     @State private var objective = ""
@@ -120,80 +39,163 @@ struct FeatureBrowser: View {
     @State private var messageRecipient: String?
     @State private var showAddMCP = false
     @State private var mcpName = ""
-    @State private var mcpTransport = "http"
     @State private var mcpEndpoint = ""
-    @State private var mcpArguments = ""
     @State private var removeServer: FeatureRow?
+    @State private var filter = ExtensionFilter.all
+    @State private var creatingPersona = false
+    /// The footer field: plugin source, marketplace source, or hook path.
+    @State private var sourceInput = ""
+
+    /// The extra flags open a form up front (used by previews and snapshot tests).
+    private let expandSkillSources: Bool
+
+    init(panel: FeaturePanel, showAddMCP: Bool = false, creatingPersona: Bool = false, expandSkillSources: Bool = false) {
+        self.panel = panel
+        self.expandSkillSources = expandSkillSources
+        _showAddMCP = State(initialValue: showAddMCP)
+        _creatingPersona = State(initialValue: creatingPersona)
+    }
 
     private var rows: [FeatureRow] {
         store.featureRows.filter { search.isEmpty || "\($0.title) \($0.subtitle) \($0.detail)".localizedCaseInsensitiveContains(search) }
     }
     private var controlsDisabled: Bool { store.featureLoading || store.run.isConfiguring }
+    private var isLoading: Bool { panel == .memory ? extensions.memory.loading : store.featureLoading }
+    private var width: CGFloat { panel == .memory ? 940 : 720 }
+    private var contentHeight: CGFloat {
+        switch panel {
+        case .mcps where showAddMCP: return 430
+        case .personas where creatingPersona: return 520
+        case .plugins, .hooks, .skills, .marketplace, .agentDefinitions, .personas, .workflows: return 440
+        default: return 360
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 16) {
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(panel.title).font(.system(size: 23, weight: .semibold))
-                    Text(panel.subtitle).font(.system(size: 13)).foregroundStyle(Theme.muted)
+            header
+            if panel != .goals && panel != .plan {
+                NativeSearchField(text: $search, placeholder: panel == .memory ? "Filter notes" : "Search \(panel.title.lowercased())", onEscape: { store.featurePanel = nil },
+                                  onMove: panel == .memory ? { extensions.memory.moveSelection(by: $0, filter: search) } : nil)
+                    .frame(height: 40).padding(.horizontal, 24).padding(.bottom, 20)
+            }
+            Divider()
+            messageBar
+            if panel == .memory {
+                MemoryPanelView(model: extensions.memory, filter: search).frame(height: 480)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        if !panel.isLocal {
+                            ForEach(store.run.approvals) { ApprovalCard(approval: $0) }
+                            ForEach(store.run.questions) { QuestionCard(request: $0) }
+                        }
+                        if panel.isLocal { localContent } else { remoteContent }
+                    }.padding(24)
+                }.frame(height: contentHeight)
+            }
+            Divider()
+            footer.padding(.horizontal, 24).padding(.vertical, 20)
+        }.frame(width: width).background(Theme.surface)
+            .task(id: panel) {
+                extensions.notice = nil
+                if panel == .plan { await store.loadSavedPlan() }
+                else if !panel.isLocal { await store.refreshFeatures(panel) }
+            }
+            .confirmationDialog("Remove MCP server \"\(removeServer?.title ?? "")\"?", isPresented: Binding(get: { removeServer != nil }, set: { if !$0 { removeServer = nil } }), titleVisibility: .visible) {
+                if let server = removeServer { Button("Remove \(server.title)", role: .destructive) { store.removeMCPServer(server.id); removeServer = nil } }
+            } message: { Text("The server will be removed from your Grok configuration. You can add it again later.") }
+            .confirmationDialog(extensions.pendingConfirmation?.message ?? "", isPresented: Binding(get: { extensions.pendingConfirmation?.panel == panel }, set: { if !$0 { extensions.pendingConfirmation = nil } }), titleVisibility: .visible) {
+                if let confirmation = extensions.pendingConfirmation {
+                    Button(confirmation.confirmTitle, role: confirmation.destructive ? .destructive : nil) {
+                        extensions.pendingConfirmation = nil
+                        confirmation.run()
+                    }
                 }
-                Spacer()
-                if !panel.isLocal {
+            } message: { if let detail = extensions.pendingConfirmation?.detail { Text(detail) } }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(panel.title).font(.system(size: 23, weight: .semibold))
+                Text(panel.subtitle).font(.system(size: 13)).foregroundStyle(Theme.muted)
+            }
+            Spacer()
+            if !panel.isLocal {
+                if isLoading && (panel == .memory || !store.featureRows.isEmpty || panel == .marketplace) {
+                    ProgressView().controlSize(.small).frame(width: 32, height: 32)
+                } else {
                     IconButton(icon: "arrow.clockwise", help: "Refresh \(panel.title)") {
                         Task { await store.refreshFeatures(panel) }
                     }.disabled(controlsDisabled)
                 }
-                IconButton(icon: "xmark", help: "Close") { store.featurePanel = nil }.keyboardShortcut(.cancelAction)
-            }.padding(24)
-            if panel != .goals && panel != .plan {
-                NativeSearchField(text: $search, placeholder: "Search \(panel.title.lowercased())", onEscape: { store.featurePanel = nil })
-                    .frame(height: 40).padding(.horizontal, 24).padding(.bottom, 20)
             }
-            Divider()
-            if let error = store.featureError, !panel.isLocal {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "exclamationmark.circle")
-                    Text(error).textSelection(.enabled)
-                    Spacer()
-                    Button("Retry") { Task { await store.refreshFeatures(panel) } }
-                        .buttonStyle(SubtleButtonStyle())
-                }.font(.system(size: 13)).padding(.horizontal, 24).padding(.vertical, 16).background(Theme.hover.opacity(0.55))
-            }
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    if !panel.isLocal {
-                        ForEach(store.run.approvals) { ApprovalCard(approval: $0) }
-                        ForEach(store.run.questions) { QuestionCard(request: $0) }
-                    }
-                    if panel.isLocal { localContent }
-                    else {
-                        if panel == .goals { goalForm }
-                        if panel == .mcps && showAddMCP { mcpForm }
-                        if store.featureLoading { ProgressView("Loading \(panel.title.lowercased())…").frame(maxWidth: .infinity).padding(25) }
-                        ForEach(rows) { row in featureRow(row) }
-                        if rows.isEmpty && !store.featureLoading && store.featureError == nil {
-                            VStack(spacing: 10) {
-                                Image(systemName: search.isEmpty ? "tray" : "magnifyingglass").font(.system(size: 25)).foregroundStyle(Theme.muted)
-                                Text(search.isEmpty ? emptyLabel : "No matching results").font(.system(size: 14)).foregroundStyle(Theme.muted)
-                            }.frame(maxWidth: .infinity).padding(35)
-                        }
-                    }
-                }.padding(24)
-            }.frame(height: panel == .mcps && showAddMCP ? 430 : 360)
-            Divider()
-            footer.padding(.horizontal, 24).padding(.vertical, 20)
-        }.frame(width: 720).background(Theme.surface)
-            .task(id: panel) {
-                if panel == .plan { await store.loadSavedPlan() }
-                else if !panel.isLocal { await store.refreshFeatures(panel) }
-            }
-            .confirmationDialog("Remove this MCP server?", isPresented: Binding(get: { removeServer != nil }, set: { if !$0 { removeServer = nil } }), titleVisibility: .visible) {
-                if let server = removeServer { Button("Remove \(server.title)", role: .destructive) { store.removeMCPServer(server.id); removeServer = nil } }
-            } message: { Text("The server will be removed from your Grok configuration. You can add it again later.") }
+            IconButton(icon: "xmark", help: "Close") { store.featurePanel = nil }.keyboardShortcut(.cancelAction)
+        }.padding(24)
+    }
+
+    @ViewBuilder private var messageBar: some View {
+        if let error = store.featureError, !panel.isLocal, panel != .memory {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "exclamationmark.circle")
+                Text(error).textSelection(.enabled)
+                Spacer()
+                Button("Retry") { Task { await store.refreshFeatures(panel) } }
+                    .buttonStyle(SubtleButtonStyle())
+            }.font(.system(size: 13)).padding(.horizontal, 24).padding(.vertical, 16).background(Theme.hover.opacity(0.55))
+        } else if let notice = extensions.notice, notice.panel == panel {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: notice.isError ? "exclamationmark.circle" : "checkmark.circle")
+                    .foregroundStyle(notice.isError ? Color.red : Theme.green)
+                Text(notice.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                Spacer()
+                IconButton(icon: "xmark", help: "Dismiss", size: 22) { extensions.notice = nil }
+            }.font(.system(size: 13)).padding(.horizontal, 24).padding(.vertical, 12).background(Theme.hover.opacity(0.4))
+        }
     }
 
     private var emptyLabel: String {
-        panel == .agents ? "No subagents are running in this task." : panel == .goals ? "No goal has been set for this task." : "No \(panel.title.lowercased()) available in this workspace."
+        switch panel {
+        case .agents: return "No subagents are running in this task."
+        case .goals: return "No goal has been set for this task."
+        case .hooks: return "No hooks are configured."
+        case .plugins: return "No plugins are installed. Install one below or browse the marketplace."
+        case .workflows: return "No saved workflows in this workspace."
+        case .personas: return "No personas available."
+        default: return "No \(panel.title.lowercased()) available in this workspace."
+        }
+    }
+
+    @ViewBuilder private var remoteContent: some View {
+        if panel == .goals { goalForm }
+        if panel == .mcps {
+            if extensions.awaitingConnectors {
+                ExtensionCallout(symbol: "safari", title: "Finish in the browser.", detail: "Connectors you add on grok.com appear here when you come back to Grok.") {
+                    Button("Refresh now") { extensions.connectorsReturned() }
+                }
+            }
+            if showAddMCP { mcpForm }
+        }
+        if store.featureLoading && store.featureRows.isEmpty && !(panel == .marketplace && extensions.marketplace.loaded) {
+            ProgressView("Loading \(panel.title.lowercased())…").frame(maxWidth: .infinity).padding(25)
+        }
+        switch panel {
+        case .plugins: PluginsPanelView(rows: rows, disabled: controlsDisabled, filter: $filter)
+        case .hooks: HooksPanelView(rows: rows, disabled: controlsDisabled, filter: $filter)
+        case .skills: SkillsPanelView(rows: rows, disabled: controlsDisabled, filter: $filter, showSources: expandSkillSources)
+        case .workflows: WorkflowsPanelView(rows: rows, disabled: controlsDisabled)
+        case .marketplace: MarketplacePanelView(model: extensions.marketplace, search: search, disabled: controlsDisabled)
+        case .agentDefinitions: AgentDefinitionsPanelView(rows: rows, disabled: controlsDisabled)
+        case .personas: PersonasPanelView(rows: rows, disabled: controlsDisabled, creating: $creatingPersona)
+        default: ForEach(rows) { row in featureRow(row) }
+        }
+        if rows.isEmpty && !store.featureLoading && store.featureError == nil && panel != .marketplace {
+            VStack(spacing: 10) {
+                Image(systemName: search.isEmpty ? "tray" : "magnifyingglass").font(.system(size: 25)).foregroundStyle(Theme.muted)
+                Text(search.isEmpty ? emptyLabel : "No matching results").font(.system(size: 14)).foregroundStyle(Theme.muted)
+            }.frame(maxWidth: .infinity).padding(35)
+        }
     }
 
     @ViewBuilder private var localContent: some View {
@@ -216,7 +218,7 @@ struct FeatureBrowser: View {
         case .plan:
             if store.savedPlanLoading { ProgressView("Loading saved plan…").padding(20) }
             if let error = store.savedPlanError { Text(error).foregroundStyle(Theme.muted).padding(10) }
-            if let content = store.savedPlanContent { MarkdownContent(text: content).padding(10) }
+            if let content = store.savedPlanContent { MarkdownContent(text: content, style: .panel).padding(10) }
             if store.run.plan.isEmpty && store.savedPlanContent == nil && !store.savedPlanLoading { Text("No saved plan yet. Use /plan to ask Grok to prepare a plan.").foregroundStyle(Theme.muted).padding(20) }
             ForEach(store.run.plan) { entry in
                 HStack(alignment: .top, spacing: 10) {
@@ -338,37 +340,86 @@ struct FeatureBrowser: View {
         }
     }
 
+    // MARK: Footer
+
     @ViewBuilder private var footer: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if panel == .plugins {
-                HStack(alignment: .bottom, spacing: 12) {
-                    DesktopTextField("Plugin source or name", text: $actionInput, title: "Plugin source", symbol: "puzzlepiece.extension")
-                    Button { runArgumentCommand("plugins", "install " + actionInput) } label: {
-                        Text("Install").frame(height: 28)
-                    }.disabled(actionInput.isEmpty || store.run.isRunning)
+            switch panel {
+            case .plugins:
+                sourceField(title: "Install a plugin", placeholder: "owner/repo, URL, or local path", symbol: "puzzlepiece.extension", action: "Install") {
+                    store.runPluginsAction(.install(source: sourceInput.trimmingCharacters(in: .whitespacesAndNewlines))); sourceInput = ""
                 }
+            case .marketplace:
+                sourceField(title: "Add a marketplace source", placeholder: "owner/repo, git URL, or local path", symbol: "shippingbox", action: "Add source") {
+                    extensions.marketplace.perform(.addSource(url: sourceInput.trimmingCharacters(in: .whitespacesAndNewlines))); sourceInput = ""
+                }
+            case .hooks:
+                sourceField(title: "Add a hook directory", placeholder: "~/.grok/hooks/my-hooks", symbol: "folder.badge.plus", action: "Add path", browse: true) {
+                    let path = (sourceInput.trimmingCharacters(in: .whitespacesAndNewlines) as NSString).expandingTildeInPath
+                    store.runHooksAction(.add(path: path)); sourceInput = ""
+                }
+            default: EmptyView()
             }
             HStack(spacing: 12) {
-                if panel == .mcps {
-                    Button(showAddMCP ? "Cancel adding" : "Add server") { showAddMCP.toggle() }.disabled(controlsDisabled)
-                    Text("Changes are saved by the harness.").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                } else if panel == .skills {
-                    Button("Add skill…") { store.addSkillFolder() }.disabled(controlsDisabled)
-                } else if panel == .plugins {
-                    Button("Reload plugins") { runArgumentCommand("plugins", "reload") }.disabled(store.run.isRunning)
-                } else if panel == .workflows {
-                    Button("View running workflows") { runArgumentCommand("workflow", "runs") }
-                } else if panel == .goals {
-                    Text("Goal availability and budgets are controlled by the harness.").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                } else if panel == .plan {
-                    Button("Start planning") { store.featurePanel = nil; store.executeCommand(name: "plan") }
-                } else {
-                    Text(store.project?.name ?? "No project selected").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                }
+                footerActions
                 Spacer(minLength: 0)
                 Button("Done") { store.featurePanel = nil }.keyboardShortcut(.defaultAction)
             }
         }.buttonStyle(SubtleButtonStyle()).font(.system(size: 13, weight: .medium))
+    }
+
+    @ViewBuilder private var footerActions: some View {
+        switch panel {
+        case .mcps:
+            Button(showAddMCP ? "Cancel adding" : "Add server") { showAddMCP.toggle() }.disabled(controlsDisabled)
+            Button { extensions.openConnectors() } label: { Label("Browse connectors", systemImage: "safari") }
+                .help("Open grok.com connectors. The list refreshes when you come back.")
+        case .skills:
+            Button("Add skill…") { store.addSkillFolder() }.disabled(controlsDisabled)
+            Button("Reset…") {
+                extensions.pendingConfirmation = ExtensionConfirmation(panel: .skills, message: "Reset skill discovery to the defaults?",
+                    detail: "Custom skill paths and ignored paths are removed from config.toml.", confirmTitle: "Reset") { store.resetSkillsConfig() }
+            }.disabled(controlsDisabled)
+        case .plugins:
+            Button("Update all") { store.runPluginsAction(.update(pluginID: nil)) }.disabled(controlsDisabled || store.featureRows.isEmpty)
+            Button("Reload plugins") { store.runPluginsAction(.reload) }.disabled(controlsDisabled)
+            Button("Marketplace…") { store.featurePanel = .marketplace }
+        case .marketplace:
+            Button("Refresh sources") { extensions.marketplace.perform(.refresh(source: nil)) }.disabled(controlsDisabled)
+        case .hooks:
+            Button("Reload hooks") { store.runHooksAction(.reload) }.disabled(controlsDisabled)
+        case .workflows:
+            Button("View running workflows") { runArgumentCommand("workflow", "runs") }
+        case .personas:
+            Button { creatingPersona = true } label: { Label("New persona", systemImage: "plus") }.disabled(creatingPersona || store.project == nil)
+        case .goals:
+            Text("Goal availability and budgets are controlled by the harness.").font(.system(size: 12)).foregroundStyle(Theme.muted)
+        case .plan:
+            Button("Start planning") { store.featurePanel = nil; store.executeCommand(name: "plan") }
+        case .memory:
+            Text("Notes are stored under \((GrokPaths.home.path as NSString).abbreviatingWithTildeInPath)").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                .lineLimit(1).truncationMode(.middle)
+        default:
+            Text(store.project?.name ?? "No project selected").font(.system(size: 12)).foregroundStyle(Theme.muted)
+        }
+    }
+
+    private func sourceField(title: String, placeholder: String, symbol: String, action: String, browse: Bool = false, submit: @escaping () -> Void) -> some View {
+        HStack(alignment: .bottom, spacing: 12) {
+            DesktopTextField(placeholder, text: $sourceInput, title: title, symbol: symbol)
+            if browse {
+                Button { chooseHookDirectory() } label: { Text("Choose…").frame(height: 28) }
+            }
+            Button(action: submit) { Text(action).frame(height: 28) }
+                .disabled(sourceInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controlsDisabled)
+        }
+    }
+
+    private func chooseHookDirectory() {
+        let picker = NSOpenPanel(); picker.canChooseDirectories = true; picker.canChooseFiles = false
+        picker.directoryURL = GrokPaths.home.appendingPathComponent("hooks")
+        picker.message = "Choose a hook directory inside \((GrokPaths.home.path as NSString).abbreviatingWithTildeInPath)."; picker.prompt = "Choose"
+        if picker.runModal() == .OK, let url = picker.url { sourceInput = (url.path as NSString).abbreviatingWithTildeInPath }
     }
 
     private func runArgumentCommand(_ name: String, _ arguments: String) {
@@ -378,100 +429,25 @@ struct FeatureBrowser: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { NotificationCenter.default.post(name: .grokFocusComposer, object: nil) }
     }
 
+    /// The terminal's one-field form: a URL for a remote server, or a command with its arguments.
     private var mcpForm: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text("Add MCP server").font(.system(size: 15, weight: .semibold))
-            DesktopTextField("e.g. team-docs", text: $mcpName, title: "Server name", symbol: "server.rack")
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Connection type").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.muted)
-                Picker("Connection type", selection: $mcpTransport) {
-                    Text("Remote URL").tag("http")
-                    Text("Local command").tag("stdio")
-                }.pickerStyle(.segmented).controlSize(.large).labelsHidden()
-            }
-            DesktopTextField(mcpTransport == "http" ? "https://example.com/mcp" : "e.g. npx", text: $mcpEndpoint,
-                             title: mcpTransport == "http" ? "Server URL" : "Executable", symbol: mcpTransport == "http" ? "link" : "terminal")
-            if mcpTransport == "stdio" {
-                DesktopTextField("Enter each argument on a separate line", text: $mcpArguments, title: "Arguments (optional)",
-                                 symbol: "text.alignleft", hint: "Spaces within an argument are preserved.", multiline: true)
-            }
+            DesktopTextField("https://... or command [args...]", text: $mcpEndpoint, title: "URL / Command", symbol: "link",
+                             hint: "A URL connects to a remote server; anything else runs as a local command with its arguments.")
+            DesktopTextField("Auto generated by URL", text: $mcpName, title: "Name", symbol: "server.rack")
             HStack(alignment: .center, spacing: 16) {
                 Text("Configure credentials through your harness environment.").font(.system(size: 12)).foregroundStyle(Theme.muted)
                     .fixedSize(horizontal: false, vertical: true)
                 Spacer()
-                Button { store.addMCPServer(name: mcpName, transport: mcpTransport, endpoint: mcpEndpoint, arguments: mcpArguments) } label: {
+                Button {
+                    if store.addMCPServer(urlOrCommand: mcpEndpoint, name: mcpName) { mcpEndpoint = ""; mcpName = ""; showAddMCP = false }
+                } label: {
                     Text("Save server").frame(height: 28)
                 }.buttonStyle(SubtleButtonStyle())
-                    .disabled(mcpName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || mcpEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controlsDisabled)
+                    .disabled(mcpEndpoint.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || controlsDisabled)
             }
         }.padding(20).background(Theme.canvas, in: RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Theme.line.opacity(0.35), lineWidth: 0.5))
-    }
-}
-
-struct AdvancedFeatureView: View {
-    @EnvironmentObject var store: AppStore
-    @State private var checkpoint: RewindCheckpoint?
-    @State private var rewindMode: RewindSelection = .conversationOnly
-    @State private var confirmRewind = false
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 16) {
-                Text(store.advancedTitle).font(.system(size: 22, weight: .semibold))
-                Spacer()
-                IconButton(icon: "xmark", help: "Close") { store.showAdvancedPanel = false }.keyboardShortcut(.cancelAction)
-            }.padding(24)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    ForEach(store.run.approvals) { ApprovalCard(approval: $0) }
-                    if store.advancedLoading { ProgressView("Loading…").padding(20) }
-                    if let error = store.advancedError { Label(error, systemImage: "exclamationmark.circle").foregroundStyle(Theme.muted).textSelection(.enabled) }
-                    if let content = store.advancedContent { MarkdownContent(text: content) }
-                    if store.advancedTitle == "Rewind" {
-                        ForEach(store.rewindPoints) { point in
-                            Button { checkpoint = point; rewindMode = .conversationOnly } label: {
-                                HStack(alignment: .top, spacing: 12) {
-                                    Image(systemName: checkpoint?.id == point.id ? "checkmark.circle.fill" : "circle")
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(point.prompt).lineLimit(3).font(.system(size: 14))
-                                        Text("\(point.createdAt) · \(point.snapshotCount) file snapshots").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                                    }
-                                    Spacer()
-                                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(Theme.canvas, in: RoundedRectangle(cornerRadius: 12))
-                                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.line.opacity(checkpoint?.id == point.id ? 0.8 : 0.3), lineWidth: 1))
-                            }.buttonStyle(.plain).disabled(store.advancedLoading)
-                        }
-                        if let checkpoint {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Text("Restore the state before this prompt").font(.system(size: 13, weight: .medium))
-                                Picker("Restore", selection: $rewindMode) {
-                                    ForEach(RewindSelection.allCases) { mode in Text(mode.title).tag(mode).disabled(mode != .conversationOnly && !checkpoint.hasFileChanges) }
-                                }.pickerStyle(.segmented).controlSize(.large)
-                                HStack(spacing: 10) {
-                                    Text("Preview the affected files before restoring.").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    Spacer()
-                                    Button("Preview") { Task { await store.previewRewind(checkpoint, mode: rewindMode) } }.disabled(store.advancedLoading || store.run.isRunning)
-                                    Button("Restore checkpoint…") { confirmRewind = true }.disabled(store.advancedLoading || store.run.isRunning || !store.canRestoreRewind(checkpoint, mode: rewindMode))
-                                }.buttonStyle(SubtleButtonStyle())
-                            }.padding(18).background(Theme.canvas, in: RoundedRectangle(cornerRadius: 12))
-                        }
-                    }
-                }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
-            }.frame(minHeight: 240, maxHeight: 500)
-            Divider()
-            HStack {
-                Button("Copy") {
-                    if let content = store.advancedContent { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(content, forType: .string) }
-                }.disabled(store.advancedContent == nil)
-                Spacer()
-                Button("Done") { store.showAdvancedPanel = false }.keyboardShortcut(.defaultAction)
-            }.buttonStyle(SubtleButtonStyle()).padding(.horizontal, 24).padding(.vertical, 20)
-        }.frame(width: 700).background(Theme.surface)
-            .confirmationDialog("Restore this checkpoint?", isPresented: $confirmRewind, titleVisibility: .visible) {
-                if let checkpoint { Button("Restore \(rewindMode.title)", role: .destructive) { Task { await store.restoreRewind(checkpoint, mode: rewindMode) }; self.checkpoint = nil } }
-            } message: { Text(rewindMode == .conversationOnly ? "Later conversation turns will be removed from this task." : rewindMode == .filesOnly ? "The previewed files will be replaced with their checkpoint contents." : "Later conversation turns will be removed and the previewed files will be replaced with their checkpoint contents.") }
     }
 }
