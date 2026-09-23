@@ -52,6 +52,15 @@ h1 { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsi
 .button[aria-expanded="true"] { background: var(--surface); border-color: var(--line); }
 .icon-button { width: 29px; padding: 4px; color: var(--muted); }
 .text-button { color: var(--accent); }
+.encrypted-button { color: var(--reasoning); border-color: #ddd4f7; background: #fbfaff; }
+.encrypted-button:hover { background: #f3efff; }
+.encrypted-badge { display: inline-flex; align-items: center; gap: 3px; flex: none; padding: 1px 5px; border: 1px solid #ddd4f7; border-radius: 4px; background: #fbfaff; color: var(--reasoning); font-size: 10px; line-height: 1.4; }
+.encrypted-badge .encrypted-glyph { font-size: 11px; }
+.ledger-item { position: relative; }
+.ledger-item.has-encrypted .ledger-row { padding-right: 52px; }
+.encrypted-lock { position: absolute; z-index: 2; top: 50%; right: 116px; width: 24px; height: 24px; padding: 0; transform: translateY(-50%); border: 1px solid #ddd4f7; border-radius: 4px; background: #fbfaff; color: var(--reasoning); font-size: 13px; line-height: 1; }
+.encrypted-lock:hover { background: #f3efff; }
+.encrypted-lock:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .session-strip { display: flex; justify-content: space-between; gap: 20px; padding: 0 22px 10px; color: var(--muted); font-size: 11px; border-bottom: 1px solid var(--line); flex: none; }
 #session-stats { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
 #session-stats > * { white-space: nowrap; }
@@ -167,6 +176,7 @@ kbd { font: 10px/1.4 var(--mono); color: var(--muted); border: 1px solid var(--l
 .metadata.tool-meta, .event-fields { margin-bottom: 16px; }
 .detail-content .content-label:not(:first-child) { margin-top: 16px; }
 .subtle-note, .missing-data { color: var(--muted); font-size: 12px; }
+.encrypted-note { color: #6f5b9b; background: #fbfaff; border: 1px solid #e5def7; border-radius: 4px; padding: 8px 9px; margin-bottom: 14px; }
 .subtle-note { margin-top: 10px; }
 .mono { font-family: var(--mono); font-size: 11px; }
 .detail-content details { margin-top: 19px; border-top: 1px solid var(--line); padding-top: 11px; }
@@ -249,6 +259,8 @@ th { font-weight: 500; color: var(--muted); }
   .event-summary { gap: 7px; }
   .event-title, .event-preview { font-size: 11px; }
   .event-time { font-size: 9px; }
+  .encrypted-lock { right: 8px; }
+  .ledger-item.has-encrypted .ledger-row { padding-right: 42px; }
   .turn-row { padding-left: 12px; font-size: 10px; }
   .ledger-footer { padding-left: 12px; padding-right: 12px; }
   .inspector { position: absolute; inset: 0; width: 100%; border-left: none; z-index: 4; }

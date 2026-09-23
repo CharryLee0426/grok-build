@@ -66,6 +66,9 @@ pub struct TraceEvent {
     pub turn: Option<u64>,
     pub tool_call_id: Option<String>,
     pub status: Option<String>,
+    /// The record contains an opaque encrypted/signature payload for reasoning.
+    #[serde(default)]
+    pub encrypted: bool,
     pub raw: Value,
 }
 
@@ -290,11 +293,13 @@ fn build(source: &Path, input: Input) -> Result<TraceData> {
         }
         saved.source = source.display().to_string();
         saved.warnings.extend(input.warnings);
+        refresh_encrypted_flags(&mut saved);
         if saved.transcript.is_empty() {
             let (entries, notes) = transcript::build(&saved);
             saved.transcript = entries;
             saved.warnings.extend(notes);
         }
+        refresh_encrypted_flags(&mut saved);
         return Ok(saved);
     }
     let mut data = TraceData {
@@ -369,6 +374,7 @@ fn build(source: &Path, input: Input) -> Result<TraceData> {
                             turn: stream_turn,
                             tool_call_id: None,
                             status: Some("error".into()),
+                            encrypted: false,
                             raw: Value::String(record.into()),
                         });
                     }
@@ -520,6 +526,68 @@ pub(super) fn payload(record: &Value) -> &Value {
         .unwrap_or(record)
 }
 
+fn has_encrypted_value(value: Option<&Value>) -> bool {
+    match value {
+        None | Some(Value::Null) => false,
+        Some(Value::String(value)) => !value.trim().is_empty(),
+        Some(Value::Array(values)) => !values.is_empty(),
+        Some(Value::Object(values)) => !values.is_empty(),
+        Some(Value::Bool(value)) => *value,
+        Some(_) => true,
+    }
+}
+
+/// Return true only for a reasoning record carrying an actual opaque payload.
+///
+/// A present-but-empty field is not evidence of encrypted reasoning. The
+/// signatures used by the Messages backend arrive on a separate
+/// `reasoning_completed` update, and redacted thinking uses `data`; both are
+/// included here so the viewers use the same definition for every provider.
+pub(super) fn encrypted_reasoning(value: &Value, kind: &str) -> bool {
+    let kind = kind.trim().to_ascii_lowercase();
+    let is_reasoning = kind.contains("reasoning")
+        || kind == "agent_thought_chunk"
+        || kind == "thinking"
+        || kind.ends_with("_thinking");
+    if !is_reasoning {
+        return false;
+    }
+    if has_encrypted_value(value.get("encrypted_content"))
+        || has_encrypted_value(value.get("encrypted"))
+        || has_encrypted_value(value.get("signature"))
+        || has_encrypted_value(value.pointer("/reasoning/encrypted"))
+        || has_encrypted_value(value.pointer("/reasoning/encrypted_content"))
+        || (value.get("type").and_then(Value::as_str) == Some("redacted_thinking")
+            && has_encrypted_value(value.get("data")))
+    {
+        return true;
+    }
+    ["content", "summary"]
+        .into_iter()
+        .filter_map(|key| value.get(key).and_then(Value::as_array))
+        .flatten()
+        .any(|part| {
+            part.get("type").and_then(Value::as_str) == Some("redacted_thinking")
+                && has_encrypted_value(part.get("data"))
+        })
+}
+
+fn refresh_encrypted_flags(data: &mut TraceData) {
+    for event in &mut data.events {
+        event.encrypted |= encrypted_reasoning(payload(&event.raw), &event.kind);
+    }
+    for entry in &mut data.transcript {
+        if entry.kind == transcript::EntryKind::Reasoning
+            && entry
+                .event_indices
+                .iter()
+                .any(|index| data.events.get(*index).is_some_and(|event| event.encrypted))
+        {
+            entry.encrypted = true;
+        }
+    }
+}
+
 fn timestamp(record: &Value) -> Option<String> {
     // ACP's disk envelope is second precision. The agent timestamp, when
     // present, records the actual update time with millisecond precision.
@@ -604,6 +672,7 @@ fn add_record(
     let value = payload(&raw);
     let kind = string(value, &["sessionUpdate", "session_update", "type", "role"])
         .unwrap_or_else(|| "record".into());
+    let encrypted = encrypted_reasoning(value, &kind);
     if kind == "turn_started" {
         *stream_turn = number(value, &["turn_number", "turnNumber"]);
         if let Some(session_id) = string(value, &["session_id", "sessionId"]) {
@@ -617,7 +686,9 @@ fn add_record(
     {
         *stream_turn = Some(index);
     }
-    let turn = number(value, &["turn_number", "turnNumber"]).or(*stream_turn);
+    let turn = number(value, &["turn_number", "turnNumber"])
+        .or_else(|| number(&raw, &["turn_number", "turnNumber"]))
+        .or(*stream_turn);
     if kind == "turn_ended" {
         *stream_turn = None;
     }
@@ -647,7 +718,7 @@ fn add_record(
     }
     if kind == "reasoning" && text.is_empty() {
         text = value.get("summary").map(text_content).unwrap_or_default();
-        if text.is_empty() && value.get("encrypted_content").is_some() {
+        if text.is_empty() && encrypted {
             text =
                 "Only encrypted reasoning was recorded; readable reasoning is unavailable.".into();
         }
@@ -677,6 +748,7 @@ fn add_record(
         turn,
         tool_call_id: call_id,
         status,
+        encrypted,
         raw,
     });
     for call in calls {
@@ -699,6 +771,7 @@ fn add_record(
             turn,
             tool_call_id: string(&call, &["id", "call_id"]),
             status: None,
+            encrypted: false,
             raw: call,
         });
     }
@@ -728,6 +801,7 @@ fn add_artifact_event(data: &mut TraceData, name: &str, value: &Value) {
         turn: None,
         tool_call_id: None,
         status: string(value, &["status"]),
+        encrypted: false,
         raw: value.clone(),
     });
 }
@@ -941,8 +1015,10 @@ fn finish(data: &mut TraceData) {
     if missing_ids > 0 {
         data.warnings.push(format!("{missing_ids} tool records have no call ID and cannot be reliably correlated; they remain visible as individual records."));
     }
+    refresh_encrypted_flags(data);
     let (entries, notes) = transcript::build(data);
     data.transcript = entries;
+    refresh_encrypted_flags(data);
     data.warnings.extend(notes);
     let mut seen = BTreeSet::new();
     data.warnings.retain(|warning| seen.insert(warning.clone()));
@@ -1058,6 +1134,60 @@ mod tests {
     }
 
     #[test]
+    fn encrypted_reasoning_requires_an_actual_opaque_payload() {
+        let cases = [
+            (
+                json!({"type": "reasoning", "encrypted_content": "opaque"}),
+                "reasoning",
+                true,
+            ),
+            (
+                json!({"type": "reasoning", "encrypted_content": "  "}),
+                "reasoning",
+                false,
+            ),
+            (
+                json!({"type": "reasoning", "encrypted_content": null}),
+                "reasoning",
+                false,
+            ),
+            (
+                json!({"type": "reasoning", "encrypted": false}),
+                "reasoning",
+                false,
+            ),
+            (
+                json!({"type": "reasoning", "signature": "opaque"}),
+                "reasoning",
+                true,
+            ),
+            (
+                json!({"type": "redacted_thinking", "data": "opaque"}),
+                "redacted_thinking",
+                true,
+            ),
+            (
+                json!({"type": "response_completed", "signature": "opaque"}),
+                "response_completed",
+                false,
+            ),
+            (
+                json!({"type": "thinking_config", "signature": "opaque"}),
+                "thinking_config",
+                false,
+            ),
+            (
+                json!({"type": "reasoning", "reasoning": {"encrypted": "opaque"}}),
+                "reasoning",
+                true,
+            ),
+        ];
+        for (value, kind, expected) in cases {
+            assert_eq!(encrypted_reasoning(&value, kind), expected, "value={value}");
+        }
+    }
+
+    #[test]
     fn preserves_reasoning_synthetic_context_and_unknown_event_fields() {
         let directory = tempfile::tempdir().unwrap();
         write(
@@ -1071,11 +1201,14 @@ mod tests {
         );
         let trace = load(directory.path()).unwrap();
         assert_eq!(trace.turns.first().unwrap().number, 4);
+        assert!(trace.events.iter().any(|event| event.kind == "reasoning"
+            && event.encrypted
+            && event.text.contains("unavailable")));
         assert!(
             trace
-                .events
+                .transcript
                 .iter()
-                .any(|event| event.kind == "reasoning" && event.text.contains("unavailable"))
+                .any(|entry| entry.kind == transcript::EntryKind::Reasoning && entry.encrypted)
         );
         assert!(
             trace
