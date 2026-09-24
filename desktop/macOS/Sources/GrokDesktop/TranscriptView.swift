@@ -164,7 +164,7 @@ struct MessageView: View, Equatable {
                     GrokMark(size: 18); Text("Grok").font(.system(size: 13, weight: .semibold))
                     if let timestamp { Spacer(minLength: 8); TranscriptTimestampLabel(date: timestamp) }
                 }
-                MarkdownContent(text: message.text)
+                MarkdownReply(text: message.text)
             }
         case .thought:
             ThoughtView(message: message, isStreaming: isStreaming, expanded: isExpanded, onExpand: onExpand)

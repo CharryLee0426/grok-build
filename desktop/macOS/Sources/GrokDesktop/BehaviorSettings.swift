@@ -25,11 +25,11 @@ struct BehaviorSettingsSection: View {
                 }.labelsHidden().pickerStyle(.segmented).fixedSize()
             }
             Divider()
-            row("Dictation shortcut", detail: "Press \(ComposerFeatureModel.voiceShortcut) to start or stop dictating into the prompt. Esc stops; Return stops and sends.") {
+            row("Dictation shortcut", detail: "\(ComposerFeatureModel.voiceShortcut) starts and stops dictation.") {
                 Toggle("Dictation shortcut", isOn: Binding(get: { composer.voiceShortcutEnabled }, set: { composer.setVoiceShortcutEnabled($0) }))
                     .toggleStyle(.switch).labelsHidden().controlSize(.small)
             }
-            row("Dictation language", detail: "Speech is transcribed in this language. Automatic follows your Mac's language.") {
+            row("Dictation language", detail: "Automatic follows your Mac's language.") {
                 Picker("Dictation language", selection: Binding(get: { composer.voiceLanguage }, set: { composer.setVoiceLanguage($0) })) {
                     Text("Automatic").tag("auto")
                     Divider()

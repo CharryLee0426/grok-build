@@ -46,6 +46,8 @@ enum PrivacyLock: Equatable {
 enum PrivacyCopy {
     static let label = "Coding data, retention, and training"
     static let description = "Opt-in to provide SpaceXAI the ability to retain and train on coding data, e.g., prompts, traces, & metrics, for training and debugging purposes. We may still collect simple user metrics, e.g. how many times you use the product or a feature."
+    /// Settings' short form; the full description is its tooltip and is shown by `/privacy`.
+    static let summary = "Let SpaceXAI keep and train on coding data, like prompts and traces. Basic usage metrics may still be collected."
     static let termsURL = URL(string: "https://x.ai/legal/terms-of-service")
     static let privacyURL = URL(string: "https://x.ai/legal/privacy-policy")
 }
@@ -73,8 +75,9 @@ struct PrivacyChoiceView: View {
                         Text(PrivacyCopy.label).font(.system(size: compact ? 14 : 15, weight: .semibold))
                         if state.pending || state.loading { ProgressView().controlSize(.mini) }
                     }
-                    Text(PrivacyCopy.description).font(.system(size: 12.5)).foregroundStyle(Theme.muted)
+                    Text(compact ? PrivacyCopy.summary : PrivacyCopy.description).font(.system(size: compact ? 12 : 12.5)).foregroundStyle(Theme.muted)
                         .fixedSize(horizontal: false, vertical: true)
+                        .help(compact ? PrivacyCopy.description : "")
                 }
             }
             HStack(spacing: 12) {

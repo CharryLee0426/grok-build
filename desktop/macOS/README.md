@@ -147,7 +147,8 @@ quotes and GitHub callouts, tables with column alignment, links, images, and
 footnotes. LaTeX math (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`, and environments such
 as `aligned`, `cases`, and `pmatrix`) is typeset natively with the system's STIX
 Two Math font, and copying typeset math copies its LaTeX. Code blocks are
-syntax-highlighted for over a hundred languages and have a Copy button. Thinking
+syntax-highlighted for over a hundred languages and have a Copy button. Each reply is
+one selectable text, so a selection can run across paragraphs, tables, and code. Thinking
 renders in a scrolling text view that follows the stream, so long reasoning stays
 responsive. `/timestamps`, `/timeline`, `/find` (⌘F), `/jump`, and `/vim-mode`
 add timestamps, a turn rail, search, a turn picker, and keyboard navigation.

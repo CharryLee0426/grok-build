@@ -180,7 +180,7 @@ struct DashboardSheet: View {
     private func section(_ group: DashboardGroup, rows: [DashboardEntry], now: Date) -> some View {
         let isCollapsed = collapsed.contains(group) && search.isEmpty
         Button {
-            withTransaction(Transaction(animation: nil)) { if collapsed.remove(group) == nil { collapsed.insert(group) } }
+            FoldMotion.toggle { if collapsed.remove(group) == nil { collapsed.insert(group) } }
         } label: {
             HStack(spacing: 6) {
                 Text(group.title)

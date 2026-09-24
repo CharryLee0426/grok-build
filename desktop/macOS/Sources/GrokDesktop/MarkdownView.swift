@@ -36,6 +36,18 @@ struct MarkdownContent: View {
     }
 }
 
+/// A reply, drawn as one TextKit text view so a selection can run across paragraphs, lists,
+/// tables, and code, and copy them together. Streaming re-renders only the newest blocks.
+struct MarkdownReply: View {
+    var text: String
+    var style: MarkdownStyle = .response
+
+    var body: some View {
+        ReadOnlyTextView(text: text, style: .reply(style), sizing: .fitContent(maxHeight: .infinity))
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 struct MarkdownBlocksView: View {
     let blocks: [MarkdownBlock]
     let style: MarkdownStyle
@@ -104,7 +116,7 @@ private struct MarkdownParagraphView: View {
     var body: some View {
         let pieces = Self.split(inlines)
         if pieces.count == 1, case .text(let content) = pieces[0] {
-            if let image = Self.soleImage(content) {
+            if let image = content.soleImage {
                 MarkdownImageView(source: image.source, alt: image.alt)
             } else {
                 MarkdownInlineText(inlines: content, style: style)
@@ -137,9 +149,12 @@ private struct MarkdownParagraphView: View {
         flush()
         return pieces.isEmpty ? [.text([])] : pieces
     }
+}
 
-    private static func soleImage(_ inlines: [MarkdownInline]) -> (source: String, alt: String)? {
-        let meaningful = inlines.filter {
+extension Array where Element == MarkdownInline {
+    /// The image a paragraph holds when it holds nothing else; it is shown as the image itself.
+    var soleImage: (source: String, alt: String)? {
+        let meaningful = filter {
             if case .text(let text) = $0 { return !text.trimmingCharacters(in: .whitespaces).isEmpty }
             return !$0.isBreak
         }

@@ -105,18 +105,12 @@ struct ComposerView: View {
                 ComposerAttachmentStrip(attachments: pending, onRemove: { attachments.remove($0) }, onPreview: { attachments.preview($0) })
                     .padding(.bottom, -4)
             }
-            ZStack(alignment: .topLeading) {
-                if store.draft.isEmpty {
-                    Text(placeholder)
-                        .font(.system(size: 16)).foregroundStyle(Theme.muted).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false)
-                }
-                PromptEditor(text: $store.draft, onSubmit: submitDraft, onCommandKey: handleComposerKey,
-                             onTextView: { [weak model = features] view in model?.promptTextView = view },
-                             onPasteAttachments: { [weak attachments] pasteboard in attachments?.paste(from: pasteboard) ?? false },
-                             onDropAttachments: { [weak attachments] pasteboard in attachments?.drop(from: pasteboard) ?? false },
-                             onAttachmentDragChanged: { targeted in editorDropTargeted = targeted })
-                    .frame(height: lines > 3 ? 120 : 76)
-            }
+            PromptEditor(text: $store.draft, placeholder: placeholder, onSubmit: submitDraft, onCommandKey: handleComposerKey,
+                         onTextView: { [weak model = features] view in model?.promptTextView = view },
+                         onPasteAttachments: { [weak attachments] pasteboard in attachments?.paste(from: pasteboard) ?? false },
+                         onDropAttachments: { [weak attachments] pasteboard in attachments?.drop(from: pasteboard) ?? false },
+                         onAttachmentDragChanged: { targeted in editorDropTargeted = targeted })
+            .frame(height: lines > 3 ? 120 : 76)
             .overlay(alignment: .topTrailing) {
                 if hoveringEditor || lines > 3 {
                     IconButton(icon: "arrow.up.left.and.arrow.down.right", help: "Edit in a larger editor", size: 24) {
@@ -567,6 +561,7 @@ struct ComposerCompactionRow: View {
 
 struct PromptEditor: NSViewRepresentable {
     @Binding var text: String
+    var placeholder = ""
     var onSubmit: () -> Void
     var onCommandKey: ((UInt16) -> Bool)? = nil
     /// Hands out the text view so dictation can insert at the cursor.
@@ -584,25 +579,34 @@ struct PromptEditor: NSViewRepresentable {
         editor.textContainerInset = NSSize(width: 0, height: 7); editor.isVerticallyResizable = true; editor.isHorizontallyResizable = false
         editor.autoresizingMask = [.width]; editor.textContainer?.widthTracksTextView = true
         editor.setAccessibilityLabel("Message Grok")
+        editor.placeholder = placeholder
         scroll.documentView = editor
         onTextView?(editor)
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         guard let editor = scroll.documentView as? SubmitTextView else { return }
-        if editor.string != text { editor.string = text }
+        context.coordinator.parent = self
+        context.coordinator.isShowingDraft = true
+        editor.showDraft(text)
+        context.coordinator.isShowingDraft = false
+        editor.placeholder = placeholder
         editor.onSubmit = onSubmit
         editor.onCommandKey = onCommandKey
         editor.onPasteAttachments = onPasteAttachments
         editor.onDropAttachments = onDropAttachments
         editor.onAttachmentDragChanged = onAttachmentDragChanged
-        context.coordinator.parent = self
     }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: PromptEditor
+        /// Replacing a composition reports a change of its own, which must not overwrite the new draft.
+        var isShowingDraft = false
         init(_ parent: PromptEditor) { self.parent = parent }
-        func textDidChange(_ notification: Notification) { if let editor = notification.object as? NSTextView { parent.text = editor.string } }
+        func textDidChange(_ notification: Notification) {
+            guard !isShowingDraft, let editor = notification.object as? NSTextView else { return }
+            parent.text = editor.committedString
+        }
     }
 }
 
@@ -613,6 +617,59 @@ final class SubmitTextView: NSTextView {
     var onDropAttachments: ((NSPasteboard) -> Bool)?
     var onAttachmentDragChanged: ((Bool) -> Void)?
     private var focusObserver: NSObjectProtocol?
+    /// Drawn by the text view rather than SwiftUI so it hides as soon as an input method starts
+    /// composing, before anything is committed to the draft.
+    var placeholder = "" {
+        didSet {
+            guard placeholder != oldValue else { return }
+            setAccessibilityPlaceholderValue(placeholder)
+            if string.isEmpty { needsDisplay = true }
+        }
+    }
+    private var placeholderShown = true
+    /// Marked text counts as content, so the placeholder is gone while an input method composes.
+    var showsPlaceholder: Bool { string.isEmpty && !placeholder.isEmpty }
+
+    override var string: String {
+        didSet { refreshPlaceholder() }
+    }
+
+    /// Shows the draft unless the editor already does. The draft holds committed text only, so marked
+    /// text (pinyin before a character is chosen) is kept unless the draft itself changed.
+    func showDraft(_ draft: String) {
+        if hasMarkedText() {
+            guard committedString != draft else { return }
+            inputContext?.discardMarkedText()
+        }
+        if string != draft { string = draft }
+    }
+
+    override func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange, replacementRange: replacementRange)
+        refreshPlaceholder()
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        refreshPlaceholder()
+    }
+
+    /// TextKit redraws only the glyphs that changed, which would leave part of the placeholder behind.
+    private func refreshPlaceholder() {
+        let shown = string.isEmpty
+        guard shown != placeholderShown else { return }
+        placeholderShown = shown
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard showsPlaceholder, let container = textContainer else { return }
+        let origin = textContainerOrigin, padding = container.lineFragmentPadding
+        let rect = NSRect(x: origin.x + padding, y: origin.y, width: max(0, bounds.width - origin.x * 2 - padding * 2), height: max(0, bounds.height - origin.y))
+        (placeholder as NSString).draw(with: rect, options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                                       attributes: [.font: font ?? NSFont.systemFont(ofSize: 16), .foregroundColor: Theme.palette.mutedNS])
+    }
 
     override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
         super.acceptableDragTypes + [.fileURL] + PromptAttachmentsModel.imageTypes
@@ -653,7 +710,9 @@ final class SubmitTextView: NSTextView {
         super.viewDidMoveToWindow()
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
         focusObserver = NotificationCenter.default.addObserver(forName: .grokFocusComposer, object: nil, queue: .main) { [weak self] _ in
-            guard let self else { return }; self.window?.makeFirstResponder(self)
+            // Refocusing the focused editor would end a composition in progress.
+            guard let self, self.window?.firstResponder !== self else { return }
+            self.window?.makeFirstResponder(self)
         }
     }
     deinit { if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) } }

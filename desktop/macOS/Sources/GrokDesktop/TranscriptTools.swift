@@ -491,7 +491,8 @@ final class TranscriptToolsModel: ObservableObject {
         }
         guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
         if composerFocused {
-            guard event.keyCode == 53, store?.draft.isEmpty == true else { return false }
+            // Esc while composing belongs to the input method, which cancels the composition.
+            guard event.keyCode == 53, store?.draft.isEmpty == true, (window.firstResponder as? NSTextView)?.hasMarkedText() != true else { return false }
             window.makeFirstResponder(nil)
             handleVimKey(.down)
             return true

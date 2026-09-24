@@ -413,7 +413,7 @@ private struct FileTreeRow: View {
         let change = isDirectory ? nil : files.change(atAbsolutePath: absolute)
         let selected = files.selection == absolute
         Button {
-            if isDirectory { withTransaction(Transaction(animation: nil)) { files.toggle(relativePath) } }
+            if isDirectory { FoldMotion.toggle { files.toggle(relativePath) } }
             else if !selected { files.select(absolute) }
         } label: {
             HStack(spacing: 6) {

@@ -66,7 +66,9 @@ private struct NativeSearchInput: NSViewRepresentable {
 
     func updateNSView(_ field: FocusedSearchField, context: Context) {
         context.coordinator.parent = self
-        if field.stringValue != text { field.stringValue = text }
+        context.coordinator.isShowingText = true
+        field.showText(text)
+        context.coordinator.isShowingText = false
         field.placeholderString = placeholder
         if context.coordinator.focusRequest != focusRequest {
             context.coordinator.focusRequest = focusRequest
@@ -78,11 +80,13 @@ private struct NativeSearchInput: NSViewRepresentable {
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         var parent: NativeSearchInput
         var focusRequest = 0
+        var isShowingText = false
         init(_ parent: NativeSearchInput) { self.parent = parent }
         func controlTextDidBeginEditing(_ notification: Notification) { parent.focused = true }
         func controlTextDidEndEditing(_ notification: Notification) { parent.focused = false }
         func controlTextDidChange(_ notification: Notification) {
-            if let field = notification.object as? NSSearchField { parent.text = field.stringValue }
+            guard !isShowingText, let field = notification.object as? NSSearchField else { return }
+            parent.text = (field.currentEditor() as? NSTextView)?.committedString ?? field.stringValue
         }
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.cancelOperation(_:)) { parent.onEscape(); return true }
@@ -109,5 +113,31 @@ final class FocusedSearchField: NSSearchField {
             guard let self, let window = self.window else { return }
             window.makeFirstResponder(self)
         }
+    }
+}
+
+// MARK: - Input method composition
+
+// While an input method composes (pinyin before a character is chosen), the text holds marked
+// text but no change is reported until it is committed, so bindings lag behind what is shown.
+
+extension NSTextView {
+    /// The text without its marked text: what has been committed so far.
+    var committedString: String {
+        let marked = markedRange()
+        let text = string as NSString
+        guard hasMarkedText(), marked.location != NSNotFound, NSMaxRange(marked) <= text.length else { return string }
+        return text.replacingCharacters(in: marked, with: "")
+    }
+}
+
+extension NSTextField {
+    /// Shows `text` unless the field already does, keeping a composition unless `text` itself changed.
+    func showText(_ text: String) {
+        if let editor = currentEditor() as? NSTextView, editor.hasMarkedText() {
+            guard editor.committedString != text else { return }
+            editor.inputContext?.discardMarkedText()
+        }
+        if stringValue != text { stringValue = text }
     }
 }

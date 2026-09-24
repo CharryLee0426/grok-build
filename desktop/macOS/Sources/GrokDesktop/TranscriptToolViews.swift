@@ -39,7 +39,9 @@ struct TranscriptQueryField: NSViewRepresentable {
 
     func updateNSView(_ field: TranscriptQueryNSField, context: Context) {
         context.coordinator.parent = self
-        if field.stringValue != text { field.stringValue = text }
+        context.coordinator.isShowingText = true
+        field.showText(text)
+        context.coordinator.isShowingText = false
         field.placeholderString = placeholder
         if context.coordinator.focusRequest != focusRequest {
             context.coordinator.focusRequest = focusRequest
@@ -52,11 +54,14 @@ struct TranscriptQueryField: NSViewRepresentable {
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         var parent: TranscriptQueryField
         var focusRequest: Int
+        var isShowingText = false
         init(_ parent: TranscriptQueryField) { self.parent = parent; focusRequest = parent.focusRequest }
 
         func controlTextDidEndEditing(_ notification: Notification) { parent.onFocusChange(false) }
         func controlTextDidChange(_ notification: Notification) {
-            if let field = notification.object as? NSSearchField, parent.text != field.stringValue { parent.text = field.stringValue }
+            guard !isShowingText, let field = notification.object as? NSSearchField else { return }
+            let text = (field.currentEditor() as? NSTextView)?.committedString ?? field.stringValue
+            if parent.text != text { parent.text = text }
         }
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             switch commandSelector {
@@ -409,16 +414,14 @@ struct DisplaySettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Label("Conversation", systemImage: "text.bubble").font(.system(size: 15, weight: .semibold))
-            Text("Timestamps, the timeline, and vim keys are shared with the Grok CLI.")
-                .font(.system(size: 14)).foregroundStyle(Theme.muted)
             VStack(spacing: 0) {
-                row("Timestamps", detail: "Show when each prompt and reply was sent.", symbol: "clock",
+                row("Timestamps", detail: "Show when each message was sent.", symbol: "clock",
                     isOn: Binding(get: { tools.showTimestamps }, set: { tools.setTimestamps($0) }))
                 Divider().padding(.leading, 46)
-                row("Turn timeline", detail: "A rail of turns beside the conversation. Hover a tick to preview a turn; click to jump to it.",
+                row("Turn timeline", detail: "A rail beside the conversation for jumping between turns.",
                     symbol: "list.bullet.below.rectangle", isOn: Binding(get: { tools.showTimeline }, set: { tools.setTimeline($0) }))
                 Divider().padding(.leading, 46)
-                row("Vim-style keys", detail: "j and k move between messages, g and G go to the top and bottom, y copies, i returns to the composer. Click the conversation, or press esc in an empty composer, to start.",
+                row("Vim-style keys", detail: "j and k move between messages; y copies. Press esc in an empty prompt to start.",
                     symbol: "keyboard", isOn: Binding(get: { tools.vimMode }, set: { tools.setVimMode($0) }))
                 Divider().padding(.leading, 46)
                 row("Compact conversation", detail: "Less space between messages.", symbol: "rectangle.compress.vertical", isOn: $compactConversation)

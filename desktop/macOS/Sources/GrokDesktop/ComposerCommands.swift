@@ -112,7 +112,7 @@ enum ComposerPermissionMode: String, CaseIterable, Identifiable {
     }
     var detail: String {
         switch self {
-        case .standard: return "Use the agent's default behavior (currently the same as Ask)."
+        case .standard: return "Use the agent's default (currently Ask)."
         case .ask: return "Ask before tool actions."
         case .auto: return "A classifier approves safe tools; risky actions still ask."
         case .alwaysApprove: return "Every tool action runs without asking."
@@ -168,8 +168,7 @@ enum ComposerFollowUpBehavior: String, CaseIterable, Identifiable {
     var id: String { rawValue }
     var title: String { self == .queue ? "Queue" : "Steer" }
     var detail: String {
-        self == .queue ? "Hold the message and send it when Grok finishes."
-            : "Add the message to the running turn at the next safe point."
+        self == .queue ? "Send it after Grok finishes." : "Add it to the running turn."
     }
 }
 

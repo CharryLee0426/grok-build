@@ -300,20 +300,19 @@ private struct WorkflowRunCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading).background(Theme.input, in: RoundedRectangle(cornerRadius: 8))
             }
             if !run.agents.isEmpty {
-                Button {
-                    withTransaction(Transaction(animation: nil)) { showsAgents.toggle() }
-                } label: {
-                    HStack(spacing: 6) {
-                        Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.muted)
-                            .rotationEffect(.degrees(showsAgents ? 90 : 0)).frame(width: 12)
-                        Text("Agents").font(.system(size: 12, weight: .semibold))
-                        Text(budget).font(.system(size: 12)).foregroundStyle(Theme.muted)
-                        Spacer(minLength: 0)
-                    }.contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityValue(showsAgents ? "Expanded" : "Collapsed")
-                if showsAgents {
+                Fold(isExpanded: $showsAgents, spacing: 12) { toggle, isOpen in
+                    Button(action: toggle) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold)).foregroundStyle(Theme.muted)
+                                .rotationEffect(.degrees(isOpen ? 90 : 0)).frame(width: 12)
+                            Text("Agents").font(.system(size: 12, weight: .semibold))
+                            Text(budget).font(.system(size: 12)).foregroundStyle(Theme.muted)
+                            Spacer(minLength: 0)
+                        }.contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
+                } content: {
                     VStack(alignment: .leading, spacing: 6) {
                         ForEach(run.agents) { agent in agentRow(agent) }
                     }.padding(.leading, 18)
