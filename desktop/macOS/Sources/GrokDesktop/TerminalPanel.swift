@@ -87,7 +87,7 @@ final class TerminalSessions: ObservableObject {
         return "/bin/zsh"
     }
 
-    static func environment(shell: String) -> [String] {
+    static func environment(shell: String, commandDirectory: String? = GrokCommand.bundledCommandDirectory) -> [String] {
         var environment = ProcessInfo.processInfo.environment
         for key in environment.keys where key.hasPrefix("GROK_DESKTOP_") { environment.removeValue(forKey: key) }
         environment["TERM"] = "xterm-256color"
@@ -96,6 +96,12 @@ final class TerminalSessions: ObservableObject {
         environment["SHELL"] = shell
         environment["HOME"] = environment["HOME"] ?? NSHomeDirectory()
         if environment["LANG"] == nil && environment["LC_ALL"] == nil { environment["LANG"] = preferredLocale }
+        // Last, so `grok` works here even with the command off, and a grok the user installed still wins.
+        // Login shells keep entries they inherit when they rebuild PATH.
+        if let commandDirectory {
+            let path = environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+            if !path.split(separator: ":").contains(Substring(commandDirectory)) { environment["PATH"] = path + ":" + commandDirectory }
+        }
         return environment.map { "\($0.key)=\($0.value)" }.sorted()
     }
 

@@ -62,6 +62,7 @@ struct SettingsView: View {
                     .glassSurface(cornerRadius: 18)
                     DisplaySettingsSection()
                     BehaviorSettingsSection()
+                    CommandLineSettingsSection()
                 }
                 .padding(3)
             }
@@ -76,7 +77,7 @@ struct SettingsView: View {
             .font(.system(size: 13)).foregroundStyle(Theme.muted)
 
             HStack {
-                Text("Grok Desktop · 0.1.0").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                Text("Grok Desktop · \(DesktopVersion.current)").font(.system(size: 12)).foregroundStyle(Theme.muted)
                 Spacer()
                 Button("Done") { dismiss() }
                     .buttonStyle(.borderedProminent)

@@ -96,6 +96,7 @@ private struct AppCommands: Commands {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: AppStore?
     func applicationDidFinishLaunching(_ notification: Notification) {
+        GrokCommand.clearQuarantine()
         // Load the shipped artwork directly so an in-place rebuild cannot leave
         // the running Dock tile displaying an older Icon Services cache entry.
         guard let iconName = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String,

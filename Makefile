@@ -10,7 +10,7 @@ DESKTOP_INSTALL_DIR ?= $(HOME)/Applications
 TUI_BINARY = $(CARGO_TARGET_DIR)/release/xai-grok-pager
 DESKTOP_APP = desktop/macOS/dist/Grok Desktop.app
 
-.PHONY: build deploy build-desktop deploy-desktop help
+.PHONY: build deploy build-desktop deploy-desktop dmg-desktop help
 
 # The default build and deploy commands only operate on the CLI/TUI.
 build:
@@ -41,12 +41,17 @@ deploy-desktop: build-desktop
 	rsync -a --delete "$(DESKTOP_APP)/" "$(DESKTOP_INSTALL_DIR)/Grok Desktop.app/"
 	@printf 'Installed desktop app: %s/Grok Desktop.app\n' "$(DESKTOP_INSTALL_DIR)"
 
+# The installer for new users: the app, with its bundled TUI, on a drag-to-Applications disk image.
+dmg-desktop: build-desktop
+	./desktop/macOS/scripts/build-dmg.sh
+
 help:
 	@printf '%s\n' \
 		'make / make build     Build the release CLI/TUI only (default).' \
 		'make deploy           Build and install the TUI to ~/.local/bin/grok.' \
 		'make build-desktop    Build the harness and package the macOS desktop app.' \
 		'make deploy-desktop   Build and install the desktop app to ~/Applications.' \
+		'make dmg-desktop      Build the desktop app and its .dmg installer in desktop/macOS/dist.' \
 		'' \
 		'Overrides: CARGO, CARGO_TARGET_DIR, PREFIX, BINDIR, DESKTOP_INSTALL_DIR.' \
 		'Set GROK_BINARY to reuse an existing harness when building the desktop app.'

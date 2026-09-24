@@ -543,10 +543,10 @@ final class AppStore: ObservableObject {
     func initialize(_ client: ACPClient) async throws -> [String: Any] {
         let result = try await client.request("initialize", params: [
             "protocolVersion": 1,
-            "clientInfo": ["name": "grok-desktop", "title": "Grok Desktop", "version": "0.1.0"],
+            "clientInfo": ["name": "grok-desktop", "title": "Grok Desktop", "version": DesktopVersion.current],
             "clientCapabilities": ["fs": ["readTextFile": false, "writeTextFile": false], "terminal": false,
                                    "_meta": ["x.ai/folderTrust": ["interactive": true]]],
-            "_meta": ["clientType": "grok_desktop", "clientIdentifier": "grok-desktop", "clientVersion": "0.1.0", "startupHints": ["nonInteractive": false]]
+            "_meta": ["clientType": "grok_desktop", "clientIdentifier": "grok-desktop", "clientVersion": DesktopVersion.current, "startupHints": ["nonInteractive": false]]
         ], timeout: 60)
         if let meta = result["_meta"] as? [String: Any] { harnessMeta.initialize = meta }
         if let methods = result["authMethods"] as? [[String: Any]] { harnessMeta.authMethods = methods }

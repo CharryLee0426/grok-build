@@ -82,6 +82,8 @@ final class ACPClient {
         environment["PATH"] = (inheritedPath.split(separator: ":").map(String.init) + extraPaths)
             .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
             .joined(separator: ":")
+        // The harness ships with the app. A leader it starts must not replace itself with another release.
+        environment["GROK_DISABLE_AUTOUPDATER"] = "1"
         process.environment = environment
         process.standardInput = newConnection.input
         process.standardOutput = newConnection.output
