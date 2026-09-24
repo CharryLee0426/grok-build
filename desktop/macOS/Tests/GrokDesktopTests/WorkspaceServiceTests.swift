@@ -69,6 +69,42 @@ final class WorkspaceServiceTests: XCTestCase {
         XCTAssertEqual(traversal, "The selected file is outside the workspace.")
     }
 
+    func testFileListingFollowsGitWithoutIgnoredOrDeletedFiles() async throws {
+        try FileManager.default.createDirectory(at: directory.appendingPathComponent("src/build"), withIntermediateDirectories: true)
+        try write("build/\n", to: ".gitignore")
+        try write("tracked\n", to: "a.txt")
+        try write("gone\n", to: "deleted.txt")
+        try write("swift\n", to: "src/b.swift")
+        try git(["add", "."])
+        try git(["commit", "-m", "fixture"])
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("deleted.txt"))
+        try write("new\n", to: "untracked file.md")
+        try write("output\n", to: "src/build/generated.o")
+        let listing = await service.listFiles(path: directory.path)
+        XCTAssertFalse(listing.truncated)
+        XCTAssertEqual(Set(listing.files), [".gitignore", "a.txt", "src/b.swift", "untracked file.md"])
+        let nested = await service.listFiles(path: directory.appendingPathComponent("src").path)
+        XCTAssertEqual(nested.files, ["b.swift"], "paths are relative to the folder listed")
+        let capped = await service.listFiles(path: directory.path, limit: 2)
+        XCTAssertEqual(capped.files.count, 2)
+        XCTAssertTrue(capped.truncated)
+    }
+
+    func testFileListingOutsideGitSkipsBuildOutput() async throws {
+        let plain = directory.appendingPathComponent("plain", isDirectory: true)
+        try FileManager.default.createDirectory(at: plain.appendingPathComponent("node_modules/pkg"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: plain.appendingPathComponent("docs"), withIntermediateDirectories: true)
+        try Data("x".utf8).write(to: plain.appendingPathComponent("node_modules/pkg/index.js"))
+        try Data("x".utf8).write(to: plain.appendingPathComponent("docs/guide.md"))
+        try Data("x".utf8).write(to: plain.appendingPathComponent("notes.txt"))
+        // The fixture repository contains `plain`, so list a copy outside it.
+        let outside = FileManager.default.temporaryDirectory.appendingPathComponent("grok-listing-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.copyItem(at: plain, to: outside)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let listing = await service.listFiles(path: outside.path)
+        XCTAssertEqual(Set(listing.files), ["docs/guide.md", "notes.txt"])
+    }
+
     func testInvalidWorkspaceIsReported() async throws {
         let snapshot = await service.inspect(path: directory.appendingPathComponent("missing").path)
         XCTAssertNotNil(snapshot.error)

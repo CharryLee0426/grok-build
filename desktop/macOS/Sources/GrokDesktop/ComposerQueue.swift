@@ -5,10 +5,12 @@ import SwiftUI
 struct ComposerQueuedPrompt: Identifiable, Equatable {
     let id: UUID
     var text: String
+    var attachments: [PromptAttachment]
 
-    init(id: UUID = UUID(), text: String) {
+    init(id: UUID = UUID(), text: String, attachments: [PromptAttachment] = []) {
         self.id = id
         self.text = text
+        self.attachments = attachments
     }
 
     /// The first line, and how many more follow it, as the terminal's queue rows show them.
@@ -32,8 +34,8 @@ struct ComposerQueueBook: Equatable {
     func isPaused(_ conversationID: UUID) -> Bool { paused.contains(conversationID) }
 
     @discardableResult
-    mutating func append(_ text: String, to conversationID: UUID) -> ComposerQueuedPrompt {
-        let entry = ComposerQueuedPrompt(text: text)
+    mutating func append(_ text: String, attachments: [PromptAttachment] = [], to conversationID: UUID) -> ComposerQueuedPrompt {
+        let entry = ComposerQueuedPrompt(text: text, attachments: attachments)
         entries[conversationID, default: []].append(entry)
         return entry
     }
@@ -46,11 +48,12 @@ struct ComposerQueueBook: Equatable {
         return entry
     }
 
-    /// Replaces an entry's text; an empty edit removes it.
+    /// Replaces an entry's text; an empty edit removes it, unless the entry carries attachments.
     mutating func update(_ entryID: UUID, text: String, in conversationID: UUID) {
         guard let index = entries[conversationID]?.firstIndex(where: { $0.id == entryID }) else { return }
-        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { remove(entryID, from: conversationID) }
-        else { entries[conversationID]?[index].text = text }
+        if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && entries[conversationID]?[index].attachments.isEmpty != false {
+            remove(entryID, from: conversationID)
+        } else { entries[conversationID]?[index].text = text }
     }
 
     /// Moves an entry up (negative) or down (positive), clamped to the queue.
@@ -309,7 +312,14 @@ struct ComposerQueueRow: View {
                         Image(systemName: "arrow.down.right.and.arrow.up.left").font(.system(size: 11)).foregroundStyle(Theme.accent)
                             .accessibilityHidden(true)
                     }
-                    Text(entry.firstLine.isEmpty ? " " : entry.firstLine).font(.system(size: 13)).lineLimit(1).truncationMode(.tail)
+                    if !entry.attachments.isEmpty {
+                        Label("\(entry.attachments.count)", systemImage: "paperclip").font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+                            .labelStyle(.titleAndIcon)
+                            .help(entry.attachments.map(\.name).joined(separator: ", "))
+                            .accessibilityLabel("\(entry.attachments.count) attachments")
+                    }
+                    Text(entry.firstLine.isEmpty ? (entry.attachments.isEmpty ? " " : entry.attachments.map(\.name).joined(separator: ", ")) : entry.firstLine)
+                        .font(.system(size: 13)).lineLimit(1).truncationMode(.tail)
                 }
                 if let more = entry.extraLinesLabel { Text(more).font(.system(size: 11)).foregroundStyle(Theme.muted) }
             }

@@ -15,6 +15,10 @@ final class DesktopFeatures {
     let sessions: SessionFeatureModel
     let extensions: ExtensionFeatureModel
     let extras: ExtrasFeatureModel
+    let attachments: PromptAttachmentsModel
+    let files: FilesPanelModel
+    let sideChat: SideChatModel
+    let terminals: TerminalSessions
 
     init(store: AppStore) {
         account = AccountFeatureModel(store: store)
@@ -23,6 +27,10 @@ final class DesktopFeatures {
         sessions = SessionFeatureModel(store: store)
         extensions = ExtensionFeatureModel(store: store)
         extras = ExtrasFeatureModel(store: store)
+        attachments = PromptAttachmentsModel(store: store)
+        files = FilesPanelModel(store: store)
+        sideChat = SideChatModel(store: store)
+        terminals = TerminalSessions()
     }
 
     /// Notifications from connections that do not belong to a task, such as the one that
@@ -171,6 +179,10 @@ extension View {
             .environmentObject(store.features.sessions)
             .environmentObject(store.features.extensions)
             .environmentObject(store.features.extras)
+            .environmentObject(store.features.attachments)
+            .environmentObject(store.features.files)
+            .environmentObject(store.features.sideChat)
+            .environmentObject(store.features.terminals)
     }
 }
 
@@ -202,7 +214,7 @@ struct DesktopPanel<Content: View, Footer: View>: View {
                 .padding(.horizontal, 24).padding(.vertical, 18)
         }
         .frame(width: width, height: height)
-        .background(Theme.surface)
+        .glassSheetBackground()
     }
 }
 

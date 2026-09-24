@@ -388,9 +388,12 @@ private struct ThemeSwatchCanvas: View {
 
 // MARK: - Settings
 
-/// Theme preferences in Settings: the same themes as `/theme`, applied as soon as one is clicked.
+/// Theme preferences in Settings: the same themes as `/theme`, applied as soon as one is clicked,
+/// and how transparent the windows' glass is.
 struct AppearanceSettingsSection: View {
     @EnvironmentObject var extras: ExtrasFeatureModel
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @AppStorage(GlassPreference.key) private var transparency = GlassPreference.defaultLevel
 
     private let columns = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
@@ -405,6 +408,21 @@ struct AppearanceSettingsSection: View {
                 ForEach([GrokTheme.auto] + GrokTheme.concrete) { theme in
                     ThemeSettingsCard(theme: theme, isActive: theme == extras.activeTheme) { extras.setTheme(theme) }
                 }
+            }
+            Divider().padding(.vertical, 4)
+            HStack(spacing: 12) {
+                Label("Transparency", systemImage: "circle.lefthalf.filled").font(.system(size: 13, weight: .medium))
+                    .frame(width: 130, alignment: .leading)
+                Text("Solid").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                Slider(value: $transparency, in: 0...1).controlSize(.small)
+                    .accessibilityLabel("Window transparency")
+                    .accessibilityValue("\(Int((transparency * 100).rounded())) percent")
+                Text("Clear").font(.system(size: 11)).foregroundStyle(Theme.muted)
+            }
+            .disabled(reduceTransparency)
+            if reduceTransparency {
+                Text("Reduce transparency is on in System Settings › Accessibility › Display, so windows stay solid.")
+                    .font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
             }
         }
     }

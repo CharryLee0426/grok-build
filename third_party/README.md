@@ -7,11 +7,12 @@ This directory holds **upstream source** vendored into the repository. It is
 
 This directory holds in-tree third-party Rust (and similar) sources: the
 mermaid layout stack that renders **untrusted model output**, the
-grove-on-NFS userspace server (`nfsserve`), and grove's FUSE client
-(`fuser`). Vendoring gives a full audit surface, pins exact source, and
+grove-on-NFS userspace server (`nfsserve`), grove's FUSE client
+(`fuser`), and the terminal emulator embedded in the macOS desktop app
+(`SwiftTerm`). Vendoring gives a full audit surface, pins exact source, and
 avoids crates.io yanks. Local patches and upgrade checklists live in each
-crate’s `Cargo.toml` header comments — treat those as the source of truth
-when re-vendoring.
+crate’s `Cargo.toml` header comments (for SwiftTerm, its `Package.swift`
+header) — treat those as the source of truth when re-vendoring.
 
 ## Vendored crates
 
@@ -23,6 +24,10 @@ when re-vendoring.
 | [`ordered_hashmap`](./ordered_hashmap/) | 0.0.3 | Apache-2.0 | [r3alst/ordered-hashmap](https://github.com/r3alst/ordered-hashmap) | [`LICENCE`](./ordered_hashmap/LICENCE) |
 | [`nfsserve`](./nfsserve/) | 0.11.0 | BSD-3-Clause | [huggingface/nfsserve](https://github.com/huggingface/nfsserve) | [`LICENSE`](./nfsserve/LICENSE) |
 | [`fuser`](./fuser/) | 0.18.0 | MIT | [cberner/fuser](https://github.com/cberner/fuser) | [`LICENSE.md`](./fuser/LICENSE.md) |
+| [`SwiftTerm`](./SwiftTerm/) | 1.20.0 | MIT | [migueldeicaza/SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) | [`LICENSE`](./SwiftTerm/LICENSE) |
+
+SwiftTerm is a Swift package, used by `desktop/macOS` as a local path
+dependency so the desktop app builds without fetching anything.
 
 Mermaid layout stack:
 
@@ -57,7 +62,8 @@ This directory is only for **in-tree vendored** sources.
 
 ## Upgrading
 
-1. Read the `VENDORING NOTES` block at the top of the crate’s `Cargo.toml`.
+1. Read the `VENDORING NOTES` block at the top of the crate’s `Cargo.toml`
+   (SwiftTerm: `Package.swift`).
 2. Re-apply listed local patches (fmt, hermetic env, unsafe fixes, dropped bins/tests).
 3. Confirm the license file still matches the declared `license =` field.
 4. Refresh [`NOTICE`](./NOTICE) if versions or upstream URLs change.

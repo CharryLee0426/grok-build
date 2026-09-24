@@ -119,8 +119,18 @@ extension AppStore {
     }
 
     func featureSession() async throws -> (ACPClient, UUID, String) {
-        guard let project, let id = ensureConversation(title: "New task") else { throw DesktopError.message("Open a project first.") }
-        if let client = clients[id], loaded.contains(id), let session = task(id)?.sessionID { return (client, id, session) }
+        guard project != nil, let id = ensureConversation(title: "New task") else { throw DesktopError.message("Open a project first.") }
+        let (client, session) = try await session(for: id)
+        return (client, id, session)
+    }
+
+    /// A live harness session for a task, which need not be the selected one. A running turn
+    /// keeps its connection, so side lanes such as `/btw` reach it without interrupting.
+    func session(for id: UUID) async throws -> (ACPClient, String) {
+        guard let task = task(id), let project = state.projects.first(where: { $0.id == task.projectID }) else {
+            throw DesktopError.message("This task is no longer available.")
+        }
+        if let client = clients[id], loaded.contains(id), let session = self.task(id)?.sessionID { return (client, session) }
         guard runs[id]?.isRunning != true else { throw DesktopError.message("The task is still connecting. Try again when it is ready.") }
         let operationID = beginOperation(id, phase: "Connecting")
         runs[id]?.isConfiguring = true
@@ -128,9 +138,9 @@ extension AppStore {
         do {
             let client = try await connect(id: id, project: project, operationID: operationID)
             try checkOperation(id, operationID: operationID)
-            guard let session = task(id)?.sessionID else { throw DesktopError.message("The runtime did not create a session.") }
+            guard let session = self.task(id)?.sessionID else { throw DesktopError.message("The runtime did not create a session.") }
             runs[id]?.phase = "Ready"
-            return (client, id, session)
+            return (client, session)
         } catch {
             if operationIDs[id] == operationID { discardConnection(id); runs[id]?.phase = "Needs attention" }
             throw error

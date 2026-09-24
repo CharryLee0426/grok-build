@@ -36,13 +36,17 @@ enum KeyboardShortcutCatalog {
         Group(title: "Task", symbol: "bubble.left.and.text.bubble.right", entries: [
             Entry(action: "Plan mode", keys: ["⌥", "⌘", "P"]),
             Entry(action: "Stop the running turn", keys: ["⌘", "."]),
-            Entry(action: "Show changes", keys: ["⌘", "J"]),
+            Entry(action: "Files, side chat, and terminal", keys: ["⌘", "J"]),
+            Entry(action: "Terminal", keys: ["⌃", "`"]),
+            Entry(action: "Ask a side question", keys: ["/btw"]),
             Entry(action: "Find in the conversation", keys: ["/find"]),
             Entry(action: "Jump to a turn", keys: ["/jump"]),
         ]),
         Group(title: "Prompt", symbol: "text.cursor", entries: [
             Entry(action: "Send", keys: ["↵"]),
             Entry(action: "New line", keys: ["⇧", "↵"]),
+            Entry(action: "Attach photos and files", keys: ["⌘", "U"]),
+            Entry(action: "Paste a copied image or file", keys: ["⌘", "V"]),
             Entry(action: "Send, with /multiline on", keys: ["⌘", "↵"]),
             Entry(action: "New line, with /multiline on", keys: ["↵"]),
             Entry(action: "Commands and skills", keys: ["/"]),

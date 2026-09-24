@@ -61,7 +61,7 @@ struct AdvancedFeatureView: View {
                 Spacer()
                 Button("Done") { store.showAdvancedPanel = false }.keyboardShortcut(.defaultAction)
             }.buttonStyle(SubtleButtonStyle()).padding(.horizontal, 24).padding(.vertical, 20)
-        }.frame(width: 700).background(Theme.surface)
+        }.frame(width: 700).glassSheetBackground()
             .confirmationDialog("Restore this checkpoint?", isPresented: $confirmRewind, titleVisibility: .visible) {
                 if let checkpoint { Button("Restore \(rewindMode.title)", role: .destructive) { Task { await store.restoreRewind(checkpoint, mode: rewindMode) }; self.checkpoint = nil } }
             } message: { Text(rewindMode == .conversationOnly ? "Later conversation turns will be removed from this task." : rewindMode == .filesOnly ? "The previewed files will be replaced with their checkpoint contents." : "Later conversation turns will be removed and the previewed files will be replaced with their checkpoint contents.") }

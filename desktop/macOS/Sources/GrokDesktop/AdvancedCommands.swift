@@ -158,39 +158,15 @@ extension AppStore {
         }
     }
 
-    /// Side questions use the dedicated ACP lane so the active turn keeps running.
+    /// `/btw`: asks in the side panel's side chat, which uses the dedicated ACP lane so the
+    /// active turn keeps running. Without a question it opens the side chat to type one.
     func askSideQuestion(_ question: String) {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty else { banner = "Use /btw <question> to ask a side question."; return }
         // A side question is about a task's conversation; don't start an empty one for it.
-        guard state.selectedConversationID != nil else { banner = "Open a task to ask a side question about it."; return }
-        Task { await loadAdvanced(title: "Side question") { client, _, session, _ in
-            let result = try ExtensionResponse.unwrap(try await client.request("_x.ai/btw", params: ["sessionId": session, "question": question], timeout: nil))
-            guard let answer = result["answer"] as? String else { throw DesktopError.message("The harness did not return an answer to the side question.") }
-            return question + "\n\n" + answer
-        } }
-    }
-
-    private func loadAdvanced(title: String, operation: @escaping (ACPClient, UUID, String, Project) async throws -> String) async {
-        guard let project else { banner = "Open a project first."; return }
-        let selectedID = state.selectedConversationID
-        let requestID = UUID()
-        advancedRequestID = requestID
-        advancedTitle = title; advancedContent = nil; advancedError = nil
-        advancedLoading = true; showAdvancedPanel = true
-        defer { if advancedRequestID == requestID { advancedLoading = false } }
-        do {
-            let (client, id, session) = try await featureSession()
-            guard advancedRequestID == requestID, self.project?.id == project.id,
-                  state.selectedConversationID == id, selectedID == nil || selectedID == id else { return }
-            let content = try await operation(client, id, session, project)
-            guard advancedRequestID == requestID, self.project?.id == project.id, state.selectedConversationID == id else { return }
-            advancedContent = content
-        } catch {
-            guard advancedRequestID == requestID, self.project?.id == project.id,
-                  selectedID == nil || state.selectedConversationID == selectedID else { return }
-            advancedError = error.localizedDescription
-        }
+        guard let id = state.selectedConversationID else { banner = "Open a task to ask a side question about it."; return }
+        showSidePanel(.sideChat)
+        if question.isEmpty { features.sideChat.requestFocus() }
+        else { features.sideChat.ask(question, in: id) }
     }
 
     /// Read the harness's saved Markdown plan, separate from ACP progress entries.

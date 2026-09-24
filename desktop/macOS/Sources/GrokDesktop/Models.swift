@@ -1,4 +1,6 @@
 import Foundation
+import ImageIO
+import UniformTypeIdentifiers
 
 struct Project: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
@@ -17,6 +19,8 @@ struct Conversation: Identifiable, Codable, Sendable {
     var isPinned = false
     var modelID: String?
     var reasoningID: String?
+    /// Side questions (`/btw`) asked about this task, with their answers.
+    var sideChat: [SideChatMessage]?
 }
 
 struct Message: Identifiable, Codable, Sendable {
@@ -29,6 +33,28 @@ struct Message: Identifiable, Codable, Sendable {
     var detail: String?
     /// When the message began streaming or was sent; unknown for replayed history.
     var createdAt: Date?
+    /// Images, files, and folders sent with a prompt.
+    var attachments: [MessageAttachment]?
+}
+
+/// What a sent prompt carried, as the transcript shows it: images keep a small preview.
+struct MessageAttachment: Identifiable, Codable, Sendable, Equatable {
+    enum Kind: String, Codable, Sendable { case image, file, folder }
+    var id = UUID()
+    var kind: Kind
+    var name: String
+    var path: String?
+    /// A downscaled JPEG or PNG of an image.
+    var thumbnail: Data?
+}
+
+/// One entry of a task's side chat.
+struct SideChatMessage: Identifiable, Codable, Sendable, Equatable {
+    enum Role: String, Codable, Sendable { case question, answer, failure }
+    var id = UUID()
+    var role: Role
+    var text: String
+    var createdAt = Date()
 }
 
 struct ModelOption: Identifiable, Equatable {
@@ -206,12 +232,39 @@ enum TranscriptReducer {
         return ""
     }
 
+    /// An image or resource link in a prompt, as the transcript shows it.
+    static func attachment(from block: [String: Any]) -> MessageAttachment? {
+        switch block["type"] as? String {
+        case "image":
+            let thumbnail = (block["data"] as? String).flatMap { Data(base64Encoded: $0, options: .ignoreUnknownCharacters) }.flatMap { data -> Data? in
+                guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+                      let image = PromptAttachmentsModel.downscaled(source, maxSide: PromptAttachmentsModel.thumbnailSide) else { return nil }
+                return PromptAttachmentsModel.encode(image, as: .jpeg, quality: 0.72)
+            }
+            return MessageAttachment(kind: .image, name: "Image", thumbnail: thumbnail)
+        case "resource_link":
+            guard let uri = block["uri"] as? String else { return nil }
+            let url = URL(string: uri)
+            let path = url?.isFileURL == true ? url?.path : nil
+            let isFolder = (block["_meta"] as? [String: Any])?["x.ai/kind"] as? String == "directory"
+            return MessageAttachment(kind: isFolder ? .folder : .file, name: block["name"] as? String ?? url?.lastPathComponent ?? uri, path: path ?? uri)
+        default:
+            return nil
+        }
+    }
+
     static func apply(_ update: [String: Any], to messages: inout [Message], date: Date? = nil) {
         let kind = update["sessionUpdate"] as? String ?? ""
         switch kind {
         case "agent_message_chunk", "agent_thought_chunk", "user_message_chunk":
             let role: Message.Kind = kind == "agent_message_chunk" ? .assistant : kind == "agent_thought_chunk" ? .thought : .user
-            let content = text(from: update["content"] as? [String: Any] ?? [:])
+            let block = update["content"] as? [String: Any] ?? [:]
+            if role == .user, let attachment = attachment(from: block) {
+                if messages.last?.kind == .user { messages[messages.count - 1].attachments = (messages[messages.count - 1].attachments ?? []) + [attachment] }
+                else { messages.append(Message(kind: .user, text: "", createdAt: date, attachments: [attachment])) }
+                return
+            }
+            let content = text(from: block)
             guard !content.isEmpty else { return }
             if messages.last?.kind == role { messages[messages.count - 1].text += content }
             else { messages.append(Message(kind: role, text: content, createdAt: date)) }

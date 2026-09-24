@@ -74,7 +74,7 @@ enum DesktopCommands {
         command("imagine", "Generate an image", hint: "<description>"),
         command("imagine-video", "Generate a video", hint: "<description>"),
         command("changes", "Inspect changes in this project", aliases: ["diff"]),
-        command("terminal", "Open this project in Terminal"),
+        command("terminal", "Open a terminal in this project"),
         // Docs, account, and one-off maintenance.
         command("docs", "Read the Grok Build guides", hint: "[web|title]", aliases: ["howto", "guides"]),
         command("release-notes", "Show what's new in this version", aliases: ["changelog"]),
@@ -264,7 +264,9 @@ extension AppStore {
         case "cd": changeProject(arguments)
         case "imagine": generateMedia(kind: "image", description: arguments)
         case "imagine-video": generateMedia(kind: "video", description: arguments)
-        case "changes": showInspector = true
+        case "changes":
+            features.files.scope = .changes
+            showSidePanel(.files)
         case "terminal": openTerminal()
         case "docs": features.extras.openDocs(arguments)
         case "release-notes": features.account.openReleaseNotes()

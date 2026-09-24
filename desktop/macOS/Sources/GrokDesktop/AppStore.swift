@@ -29,7 +29,11 @@ final class AppStore: ObservableObject {
     /// What the harness reported about itself and the signed-in account.
     @Published var harnessMeta = HarnessMeta()
     lazy var features = DesktopFeatures(store: self)
+    /// The side panel beside the conversation: files, side chat, and terminal.
     @Published var showInspector = false
+    @Published var sidePanelTab: SidePanelTab = .files {
+        didSet { defaults.set(sidePanelTab.rawValue, forKey: "sidePanelTab") }
+    }
     @Published var showArchived = false
     /// Recents lists every project's tasks, so it starts folded each launch.
     @Published var recentsExpanded = false
@@ -157,6 +161,7 @@ final class AppStore: ObservableObject {
         }
         self.binaryPath = binaryPath ?? ProcessInfo.processInfo.environment["GROK_DESKTOP_HARNESS"] ?? DesktopPaths.findHarness(in: state.projects.first?.path)
         if state.projects.contains(where: { $0.id == state.selectedProjectID }) == false { state.selectedProjectID = state.projects.first?.id }
+        if let tab = defaults.string(forKey: "sidePanelTab").flatMap(SidePanelTab.init(rawValue:)) { sidePanelTab = tab }
         updateMenuState()
         menuStateObserver = objectWillChange.sink { [weak self] _ in
             MainActor.assumeIsolated {
@@ -347,6 +352,8 @@ final class AppStore: ObservableObject {
     func send(displayText: String? = nil, promptText: String? = nil, requiredTool: String? = nil, bypassDesktopCommands: Bool = false) {
         let prompt = (displayText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
         let commandDraftLocation = draftLocation
+        // Attachments belong to the composer's draft; text sent from elsewhere leaves them in place.
+        let pendingAttachments = displayText == nil ? features.attachments.drafts[commandDraftLocation] ?? [] : []
         if promptText == nil, !bypassDesktopCommands, let command = SlashCommand.split(prompt) {
             // Mid-turn, native panels open at once; commands that need an idle task keep the draft.
             let policy: DesktopCommands.TurnPolicy = run.isRunning ? DesktopCommands.turnPolicy(command.name, arguments: command.arguments) : .runNow
@@ -365,11 +372,17 @@ final class AppStore: ObservableObject {
             draft = ""; drafts.removeValue(forKey: commandDraftLocation)
             goalAction(command.arguments); return
         }
-        if !prompt.isEmpty, run.isRunning, let id = state.selectedConversationID, features.composer.enqueue(prompt, conversationID: id) {
-            if displayText == nil { draft = ""; drafts.removeValue(forKey: commandDraftLocation) }
+        if pendingAttachments.contains(where: \.isPreparing) {
+            banner = "Images are still being prepared. Send again in a moment."
             return
         }
-        guard !prompt.isEmpty, let project, !run.isRunning, !run.isConfiguring else { return }
+        if !prompt.isEmpty || !pendingAttachments.isEmpty, run.isRunning, let id = state.selectedConversationID,
+           features.composer.enqueue(prompt, attachments: pendingAttachments, conversationID: id) {
+            if displayText == nil { draft = ""; drafts.removeValue(forKey: commandDraftLocation) }
+            _ = features.attachments.take(from: commandDraftLocation)
+            return
+        }
+        guard !prompt.isEmpty || !pendingAttachments.isEmpty, let project, !run.isRunning, !run.isConfiguring else { return }
         if promptText == nil, !bypassDesktopCommands, let command = SlashCommand.split(prompt), run.commandsLoaded,
            !run.commands.contains(where: { $0.name == command.name || $0.aliases.contains(command.name) }) {
             banner = "Unknown command /\(command.name). Open the command menu to see commands available in this project."
@@ -379,13 +392,15 @@ final class AppStore: ObservableObject {
             banner = "The bundled Grok runtime is missing. Reinstall Grok Desktop to start a task."; return
         }
         let sentDraftLocation = draftLocation
+        let attachments = displayText == nil ? features.attachments.take(from: sentDraftLocation) : []
         var id = state.selectedConversationID
         if id == nil {
-            let task = Conversation(projectID: project.id, title: String(prompt.prefix(64)), modelID: state.selectedModelID, reasoningID: state.selectedReasoningID)
+            let title = prompt.isEmpty ? attachments.first?.name ?? "New task" : prompt
+            let task = Conversation(projectID: project.id, title: String(title.prefix(64)), modelID: state.selectedModelID, reasoningID: state.selectedReasoningID)
             state.conversations.insert(task, at: 0); id = task.id; state.selectedConversationID = task.id
         }
         guard let id else { return }
-        let optimisticPrompt = Message(kind: .user, text: prompt, createdAt: Date())
+        let optimisticPrompt = Message(kind: .user, text: prompt, createdAt: Date(), attachments: attachments.isEmpty ? nil : attachments.map(\.messageAttachment))
         append(optimisticPrompt, to: id)
         pendingPrompts[id] = optimisticPrompt
         // Text sent from elsewhere (a dashboard reply, a media command) leaves the draft alone.
@@ -411,9 +426,8 @@ final class AppStore: ObservableObject {
                 }
                 pendingPrompts.removeValue(forKey: id)
                 runs[id]?.phase = "Working"
-                var block: [String: Any] = ["type": "text", "text": promptText ?? prompt]
-                if promptText != nil { block["_meta"] = ["displayText": prompt] }
-                let result = try await client.request("session/prompt", params: ["sessionId": session, "prompt": [block]], timeout: nil)
+                let blocks = PromptBlocks.make(text: promptText ?? prompt, meta: promptText != nil ? ["displayText": prompt] : nil, attachments: attachments)
+                let result = try await client.request("session/prompt", params: ["sessionId": session, "prompt": blocks], timeout: nil)
                 try checkOperation(id, operationID: operationID)
                 flushTranscript(id)
                 let stopped = cancellationRequested.contains(id) || result["stopReason"] as? String == "cancelled"
@@ -949,9 +963,24 @@ final class AppStore: ObservableObject {
         if diffText != result { diffText = result }
     }
     func revealProject() { if let project { NSWorkspace.shared.open(URL(fileURLWithPath: project.path)) } }
-    func openTerminal(at path: String? = nil) {
-        guard let path = path ?? project?.path else { return }
-        NSWorkspace.shared.open([URL(fileURLWithPath: path)], withApplicationAt: URL(fileURLWithPath: "/System/Applications/Utilities/Terminal.app"), configuration: NSWorkspace.OpenConfiguration())
+
+    /// Opens the side panel on a tab.
+    func showSidePanel(_ tab: SidePanelTab) {
+        sidePanelTab = tab
+        if !showInspector { withAnimation(.easeInOut(duration: 0.18)) { showInspector = true } }
+        if minimalMode { minimalMode = false }
+    }
+
+    func toggleSidePanel() {
+        withAnimation(.easeInOut(duration: 0.18)) { showInspector.toggle() }
+    }
+
+    /// The side panel's terminal, in the selected project or the given one.
+    func openTerminal(projectID: UUID? = nil) {
+        if let projectID, projectID != state.selectedProjectID { selectProject(projectID) }
+        guard project != nil else { banner = "Open a project to use the terminal."; return }
+        showSidePanel(.terminal)
+        features.terminals.requestFocus()
     }
     func login(provider: String) {
         guard !loginRunning else { return }
@@ -994,6 +1023,7 @@ final class AppStore: ObservableObject {
         historyClient?.stop(); historyClient = nil
         catalogClient?.stop(); catalogClient = nil
         loginProcess?.terminate()
+        features.terminals.terminateAll()
     }
     func task(_ id: UUID) -> Conversation? { state.conversations.first { $0.id == id } }
     func append(_ message: Message, to id: UUID) {

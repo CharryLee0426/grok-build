@@ -163,7 +163,7 @@ struct CommandPalette: View {
                 Spacer()
                 Text("↑↓ Navigate   ↵ Select")
             }.font(.system(size: 11)).foregroundStyle(Theme.muted).padding(.horizontal, 20).padding(.vertical, 14)
-        }.frame(width: 660).background(Theme.surface)
+        }.frame(width: 660).glassSheetBackground()
             .onChange(of: query) { _, _ in selected = 0 }
             .task { await store.refreshCommands() }
     }

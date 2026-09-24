@@ -304,7 +304,7 @@ struct TranscriptWindow: View {
             content
         }
         .frame(minWidth: 640, minHeight: 480)
-        .background(Theme.canvas)
+        .glassWindowBackground()
         .foregroundStyle(Theme.ink)
         .overlay(alignment: .bottom) {
             if let status {

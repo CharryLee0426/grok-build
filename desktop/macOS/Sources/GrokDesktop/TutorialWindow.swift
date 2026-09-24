@@ -21,9 +21,9 @@ struct GrokTutorialTopic: Identifiable, Equatable {
         case "02-first-prompt":
             return "Press ↵ to send and ⇧↵ for a new line (with /multiline, ↵ adds a line and ⌘↵ sends). Stop a running turn with ⌘. or the stop button, and quit with ⌘Q."
         case "03-attach-and-paste":
-            return "The terminal's @ file picker and ! shell prompt aren't in Grok Desktop. Name files and line ranges in your prompt and Grok opens them with its tools; use Task › Open in Terminal to run commands yourself."
+            return "Drag images, files, or folders onto the conversation, paste a screenshot with ⌘V, or choose + › Add photos & files (⌘U); they preview above the prompt until you send. To run commands yourself, press ⌃` for the terminal in the side panel."
         case "04-navigation":
-            return "Scroll the conversation with your trackpad or mouse. ⌘B shows or hides the sidebar, ⌘J shows changes, and ⌘K searches your tasks; /find and /jump move through long conversations."
+            return "Scroll the conversation with your trackpad or mouse. ⌘B shows or hides the sidebar, ⌘J the side panel with files, side chat, and terminal, and ⌘K searches your tasks; /find and /jump move through long conversations."
         case "05-slash-commands":
             return "⇧⌘P opens the command palette (the terminal's Ctrl+P), and Keyboard Shortcuts in the palette lists every key."
         case "06-worktrees":
@@ -62,7 +62,7 @@ struct TutorialWindow: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 720, minHeight: 540)
-        .background(Theme.canvas)
+        .glassWindowBackground()
         .foregroundStyle(Theme.ink)
         .focusable()
         .focused($focused)

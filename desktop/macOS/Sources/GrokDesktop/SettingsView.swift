@@ -11,10 +11,7 @@ struct SettingsView: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
                 GrokMark(size: 36)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Settings").font(.system(size: 24, weight: .semibold))
-                    Text("Make yourself at home").font(.system(size: 14)).foregroundStyle(Theme.muted)
-                }
+                Text("Settings").font(.system(size: 24, weight: .semibold))
                 Spacer()
                 IconButton(icon: "xmark", help: "Close settings") { dismiss() }
             }
@@ -92,7 +89,7 @@ struct SettingsView: View {
         .padding(24)
         .frame(width: 660, height: 680)
         .foregroundStyle(Theme.ink)
-        .background(Theme.canvas)
+        .glassSheetBackground()
         .onAppear { accounts.refresh() }
         .onChange(of: store.loginRunning) { _, running in
             accounts.refresh()

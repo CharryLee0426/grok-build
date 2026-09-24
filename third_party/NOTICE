@@ -68,6 +68,18 @@ Copyright:  Copyright (c) 2020-present Christopher Berner;
             Copyright 2013-2019 Andreas Neuhaus (see LICENSE.md)
 
 --------------------------------------------------------------------------------
+SwiftTerm
+--------------------------------------------------------------------------------
+Path:       third_party/SwiftTerm/
+License:    MIT
+License file: third_party/SwiftTerm/LICENSE
+Upstream:   https://github.com/migueldeicaza/SwiftTerm (v1.20.0 @ 5d14406844143538cd8f8851d2d8a67c1fe443e5)
+Copyright:  Copyright (c) 2019-2026 Miguel de Icaza; Copyright (c) 2017-2019 The xterm.js
+            authors; Copyright (c) 2014-2016 SourceLair Private Company;
+            Copyright (c) 2012-2013 Christopher Jeffrey (see LICENSE)
+Used by:    desktop/macOS (the embedded terminal of Grok Desktop)
+
+--------------------------------------------------------------------------------
 End of notices for vendored third_party/ crates.
 
 Full product notices (all crates.io / git dependencies shipped with the Grok

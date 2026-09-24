@@ -15,8 +15,11 @@ and load provider credentials and configuration.
   if the tools are not installed.
 - A Grok CLI with `agent stdio` support, preferably built from this checkout.
 
-The desktop package has no external Swift dependencies and uses Apple's system
-frameworks. Building the Rust harness has its own requirements, documented in the
+The desktop package uses Apple's system frameworks and one third-party package,
+[SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) (MIT), which draws the
+embedded terminal. It is vendored under [`third_party/SwiftTerm`](../../third_party/SwiftTerm)
+and used as a local path dependency, so building needs no network access.
+Building the Rust harness has its own requirements, documented in the
 [repository README](../../README.md#building-from-source).
 
 ## Build and launch
@@ -73,9 +76,22 @@ swift test --package-path desktop/macOS
    expandable thinking and tool output, plan progress, permission requests,
    project trust decisions, and agent questions. Messages you send while Grok is
    working wait in a queue above the composer and are sent in order.
-4. Open **Changes** to inspect staged, unstaged, and untracked files. Select a
-   file to read its diff; use the refresh button after external edits.
-5. Type **/** in the composer, or press **⇧⌘P**, to browse commands and skills.
+4. Attach images, files, and folders from **+ › Add photos & files** (⌘U) or
+   **+ › Add folder**, by dragging them onto the conversation or the prompt, or by
+   pasting a screenshot or copied file with ⌘V. Attachments preview above the
+   prompt (click one for Quick Look, hover to remove it) and stay with that draft
+   until you send. Images go to the model as images, downscaled when large; files
+   and folders go as links, and the harness reads small text files inline.
+5. Press **⌘J**, or click the side panel button in the toolbar, for the side
+   panel. **Files** browses the project as Git sees it (tracked and untracked,
+   without ignored files) with a filter, previews files with syntax highlighting,
+   and switches to **Changes** for staged, unstaged, and untracked files and
+   their diffs. **Side chat** asks Grok about the task without interrupting it
+   (the same as `/btw`); each task keeps its thread. **Terminal** (⌃\`) runs your
+   login shell in the project folder and keeps running while you switch tabs or
+   tasks. Drag the panel's left edge to resize it; double-click the edge to reset
+   it. Drag a file from the panel onto the prompt to attach it.
+6. Type **/** in the composer, or press **⇧⌘P**, to browse commands and skills.
    Use the arrow keys to navigate, **Tab** to complete a command, **Return** to
    select it, and **Escape** to dismiss. Commands with arguments fill the composer
    so you can add details before sending. The **+** menu and **Extensions** menu
@@ -102,9 +118,11 @@ Unknown commands produce an error instead of becoming ordinary model prompts.
 - **Subagents:** inspect live activity, output and failure details, stop children,
   and message addressable agents. Agent definitions and personas have separate
   browsers. Spawning and delegation remain managed by Grok's tools.
-- **Other task actions:** `/btw`, `/fork`, `/recap`, `/rewind`, `/tasks`, `/usage`,
-  history, transcript search, copy/export, and model/thinking selection have native
-  interfaces. Image/video commands appear when their tools are advertised.
+- **Other task actions:** `/btw` (in the side panel's Side chat), `/fork`, `/recap`,
+  `/rewind`, `/tasks`, `/usage`, history, transcript search, copy/export, and
+  model/thinking selection have native interfaces. `/changes` and `/terminal` open
+  the side panel's Changes and Terminal. Image/video commands appear when their
+  tools are advertised.
 
 Every terminal command has a desktop equivalent. [COMMANDS.md](COMMANDS.md)
 records all 75 pager commands, shell built-ins, CLI families, exact ACP
@@ -156,9 +174,12 @@ model, adjustable thinking level when supported, and conversation mode. Changes
 are acknowledged by the harness before sending is re-enabled, and model/thinking
 choices persist across relaunches. Settings includes the terminal's themes
 (auto, Grok Night, Grok Day, Tokyo Night, Rosé Pine Moon, Oscura Midnight),
-permission mode, conversation display, and dictation. The interface uses system typography, native toolbar controls, and
-Liquid Glass on supported systems, respecting reduced transparency and motion. Unsent drafts are retained while
-switching between tasks and projects during the app session.
+permission mode, conversation display, and dictation. The interface uses system typography and native toolbar
+controls. Every window is glass: the desktop shows through, blurred, most clearly in the sidebar, and controls such as
+the composer use Liquid Glass on macOS 26 (material elsewhere). **Settings › Appearance › Transparency** sets how
+much shows through, from Solid to Clear; the terminal themes tint the glass with their own colours. Reduce
+Transparency in System Settings makes windows solid, and reduced motion is respected. Unsent drafts and their
+attachments are retained while switching between tasks and projects during the app session.
 
 The app uses the CLI's account and configuration files, including provider
 credentials under `~/.grok` (or the harness's configured home). It does not copy
@@ -176,7 +197,9 @@ both launch methods. See the [authentication guide](../../crates/codegen/xai-gro
 | Command palette | ⇧⌘P |
 | Enter plan mode | ⌥⌘P |
 | Toggle sidebar | ⌘B |
-| Toggle changes inspector | ⌘J |
+| Toggle side panel (files, side chat, terminal) | ⌘J |
+| Terminal | ⌃\` |
+| Attach photos and files | ⌘U |
 | Settings | ⌘, |
 | Find in conversation | ⌘F, then ⌘G / ⇧⌘G |
 | Dictate | ⇧⌘D |
@@ -200,10 +223,12 @@ Quitting stops active desktop connections and saves conversations. Reopening a
 task resumes its saved harness session when you send another prompt; work does
 not continue in the desktop app after it quits.
 
-The changes inspector is read-only; it does not stage, commit, or revert files.
-Large diff previews are capped at 1 MiB per section. **Open in Terminal** launches
-macOS Terminal at the project folder; there is no embedded interactive terminal.
-Prompt attachments are not implemented. `/fork --worktree` (or the ask sheet)
+The Files tab is read-only; it does not stage, commit, or revert files. File
+previews and diffs are capped at 1 MiB (diffs per section), and the tree lists up
+to 50,000 files. Side chats are saved with their task in the desktop state file.
+The terminal runs your login shell with your privileges, exactly as Terminal
+does; it ends when you quit the app or restart it from the panel. Pasted and
+dragged image data waits in a temporary folder until it is sent. `/fork --worktree` (or the ask sheet)
 creates a git worktree and adds it as a project; `/trace` and `/export` run the
 bundled `grok` executable. Dictation needs microphone permission; it streams to
 xAI's speech-to-text service with an xAI sign-in, and otherwise uses on-device
@@ -225,12 +250,14 @@ temporary `GROK_HOME` directories.
 
 Views can be rendered offscreen for review: set `GROK_DESKTOP_SNAPSHOT_DIR` to a
 folder and run `swift test --filter Snapshot` to write light and dark PNGs of
-the sidebar, conversation, and every command sheet and window.
+the sidebar, conversation, side panel, attachments, and every command sheet and
+window. Glass is not drawn offscreen, so surfaces show only their tints there.
 
 For manual UI testing without inference, build a separate development bundle
 with `GROK_BINARY="$PWD/desktop/macOS/Tests/Fixtures/mock-grok.py"` passed to the
 packaging script. It clearly labels its output as an offline fixture. Prompts containing `fixture:permission`, `fixture:question`,
-`fixture:plan`, `fixture:trust`, or `fixture:wait` exercise the interactive flows.
+`fixture:plan`, `fixture:trust`, or `fixture:wait` exercise the interactive flows; replies name any attachments they
+received, and side questions get fixture answers.
 Rebuild with the real harness afterward.
 
 For isolated development runs, `GROK_DESKTOP_STATE_FILE` selects an absolute path

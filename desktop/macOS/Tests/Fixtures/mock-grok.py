@@ -7,8 +7,9 @@ as fixture data. Prompts containing `fixture:permission`, `fixture:question`,
 `fixture:plan`, or `fixture:trust` display the corresponding interaction;
 `fixture:subagents` streams a simulated child agent lifecycle.
 `fixture:wait` waits for Stop and `fixture:error` returns a protocol error.
-The ordinary scenario streams Markdown, a plan, and a simulated tool result.
-The command catalog, MCPs, skills, and goals are also simulated over ACP.
+The ordinary scenario streams Markdown, a plan, and a simulated tool result, and
+names any image or resource-link attachments it received. Side questions
+(`_x.ai/btw`), the command catalog, MCPs, skills, and goals are also simulated over ACP.
 """
 
 import json
@@ -207,7 +208,9 @@ class MockHarness:
 
     def prompt(self, request_id, params, stop):
         session_id = params["sessionId"]
-        prompt = "".join(block.get("text", "") for block in params.get("prompt", []) if block.get("type") == "text")
+        blocks = params.get("prompt", [])
+        prompt = "".join(block.get("text", "") for block in blocks if block.get("type") == "text")
+        attachments = [block for block in blocks if block.get("type") in ("image", "resource_link")]
         def finish(stop_reason):
             # Remove the old turn before replying so an immediate next prompt is
             # never rejected merely because the worker is finishing its cleanup.
@@ -226,7 +229,9 @@ class MockHarness:
             if "fixture:error" in prompt:
                 self.error(request_id, -32000, "Offline fixture: a recoverable harness error.")
                 return
-            self.update(session_id, {"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": prompt}})
+            # Like the harness, echo each prompt block so session/load replays attachments.
+            for block in blocks:
+                self.update(session_id, {"sessionUpdate": "user_message_chunk", "content": block})
             self.update(session_id, {"sessionUpdate": "agent_thought_chunk", "content": {"type": "text", "text": "Preparing the offline desktop fixture."}})
             self.update(session_id, {"sessionUpdate": "plan", "entries": [
                 {"content": "Inspect the fixture", "priority": "medium", "status": "in_progress"},
@@ -273,6 +278,9 @@ class MockHarness:
                 detail += "\nClient reply: " + json.dumps(interaction, sort_keys=True)
             self.update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": tool_id, "status": "completed", "content": [{"type": "content", "content": {"type": "text", "text": detail}}]})
             answer = "## Ready to build\n\nThis is an **offline test fixture**, connected over the same ACP transport as Grok Build.\n\n- Streamed conversation and tool activity\n- Project-scoped tasks and session history\n- Native approvals, model selection, and workspace changes\n\n```swift\nlet nextStep = \"Build something useful\"\n```\n\nThe installed app uses its bundled Grok runtime automatically."
+            if attachments:
+                names = ", ".join(block.get("name") or block.get("mimeType", "image") for block in attachments)
+                answer += "\n\nReceived {} attachment(s): {}.".format(len(attachments), names)
             for offset in range(0, len(answer), 28):
                 if stop.wait(0.012):
                     finish("cancelled")
@@ -411,6 +419,12 @@ class MockHarness:
                 self.result(request_id, {"result": None, "error": "Unknown fixture bundle entry."})
                 return
             self.result(request_id, {"result": {"kind": params["kind"], "name": params["name"], "content": "# Offline fixture agent\n\nInspect simulated data only."}})
+        elif method == "_x.ai/btw":
+            if params.get("sessionId") not in self.sessions or not params.get("question"):
+                self.error(request_id, -32602, "btw requires a sessionId and a question.")
+                return
+            question = params["question"].rsplit("New side question: ", 1)[-1]
+            self.result(request_id, {"result": {"answer": "Offline fixture side answer to: " + question}})
         elif method == "_x.ai/recap":
             session_id = params.get("sessionId")
             if session_id not in self.sessions:
