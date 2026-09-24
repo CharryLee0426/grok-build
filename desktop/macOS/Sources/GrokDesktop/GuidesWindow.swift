@@ -36,7 +36,7 @@ struct DocsWindow: View {
             detail.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 780, minHeight: 520)
-        .background(Theme.canvas)
+        .glassWindowBackground()
         .foregroundStyle(Theme.ink)
         .environment(\.openURL, OpenURLAction(handler: followLink))
         .task(id: reloadToken) { await load() }

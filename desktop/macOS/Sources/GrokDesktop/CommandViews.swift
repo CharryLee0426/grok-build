@@ -96,7 +96,7 @@ struct FeatureBrowser: View {
             }
             Divider()
             footer.padding(.horizontal, 24).padding(.vertical, 20)
-        }.frame(width: width).background(Theme.surface)
+        }.frame(width: width).glassSheetBackground()
             .task(id: panel) {
                 extensions.notice = nil
                 if panel == .plan { await store.loadSavedPlan() }

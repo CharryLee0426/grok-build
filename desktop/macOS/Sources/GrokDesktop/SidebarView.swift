@@ -45,13 +45,12 @@ struct SidebarView: View {
                 SidebarNavigationRow(title: "Settings", icon: "gearshape", shortcut: "⌘,") { store.showSettings = true }
             }.padding(.horizontal, 10).padding(.vertical, 8)
                 .overlay(alignment: .top) { Theme.line.opacity(0.5).frame(height: 0.5) }
-            HStack(spacing: 7) {
-                Circle().fill(store.binaryPath.isEmpty ? Theme.muted : Theme.green).frame(width: 6, height: 6)
-                Text(store.binaryPath.isEmpty ? "Engine unavailable" : "Runs on your Mac").font(.system(size: 11, weight: .medium))
-                Spacer()
-                if store.syncing { ProgressView().controlSize(.mini).help("Importing harness tasks…") }
+            if store.binaryPath.isEmpty {
+                Label("Grok engine unavailable", systemImage: "exclamationmark.triangle")
+                    .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.muted)
+                    .padding(.horizontal, 20).padding(.bottom, 12)
+                    .help("The bundled Grok runtime is missing. Reinstall Grok Desktop.")
             }
-            .foregroundStyle(Theme.muted).padding(.horizontal, 20).padding(.bottom, 14).padding(.top, 2)
         }.background { SidebarMaterial().ignoresSafeArea() }
     }
 
@@ -65,9 +64,13 @@ struct SidebarView: View {
             ForEach(pinned) { taskRow($0, now: now, showsProject: true, indent: 8) }
         }
         SidebarSectionHeader(title: "Projects") {
-            IconButton(icon: "arrow.triangle.2.circlepath", help: "Import tasks from the harness for every project", size: 24) {
-                store.syncHistory(projects: store.state.projects)
-            }.disabled(store.syncing || store.state.projects.isEmpty)
+            if store.syncing {
+                ProgressView().controlSize(.mini).frame(width: 24, height: 24).help("Importing harness tasks…")
+            } else {
+                IconButton(icon: "arrow.triangle.2.circlepath", help: "Import tasks from the harness for every project", size: 24) {
+                    store.syncHistory(projects: store.state.projects)
+                }.disabled(store.state.projects.isEmpty)
+            }
             IconButton(icon: "folder.badge.plus", help: "Open project · ⇧⌘O", size: 24) { store.addProject() }
         }
         if store.state.projects.isEmpty {
@@ -289,7 +292,7 @@ private struct ProjectFolderRow: View, Equatable {
             .disabled(store.syncing)
         Divider()
         Button("Reveal in Finder", systemImage: "folder") { NSWorkspace.shared.open(URL(fileURLWithPath: project.path)) }
-        Button("Open in Terminal", systemImage: "terminal") { store.openTerminal(at: project.path) }
+        Button("Open Terminal", systemImage: "terminal") { store.openTerminal(projectID: project.id) }
         Button("Copy Path", systemImage: "doc.on.doc") {
             NSPasteboard.general.clearContents(); NSPasteboard.general.setString(project.path, forType: .string)
         }

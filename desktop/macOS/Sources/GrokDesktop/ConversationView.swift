@@ -3,12 +3,21 @@ import AppKit
 
 struct ConversationView: View {
     @EnvironmentObject var store: AppStore
+    @EnvironmentObject var attachments: PromptAttachmentsModel
     @State private var showPlan = false
+    @State private var dropTargeted = false
 
     var body: some View {
         VStack(spacing: 0) {
-            if store.conversation == nil { welcome.frame(maxHeight: .infinity) }
-            else { TranscriptView() }
+            Group {
+                if store.conversation == nil { welcome.frame(maxHeight: .infinity) }
+                else { TranscriptView() }
+            }
+            // Files dropped anywhere on the conversation attach to the prompt.
+            .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted) { providers in
+                store.project != nil && attachments.add(providers: providers)
+            }
+            .overlay { if dropTargeted && store.project != nil { AttachmentDropOverlay(cornerRadius: 18).padding(16) } }
             VStack(spacing: 10) {
                 if let goal = store.run.goal { goalStatus(goal) }
                 if !store.run.subagents.isEmpty {
@@ -57,9 +66,6 @@ struct ConversationView: View {
             Spacer()
             GrokMark(size: 47).padding(.bottom, 24)
             Text("What will you build?").font(.system(size: 32, weight: .semibold)).tracking(-0.6)
-            HStack(spacing: 5) {
-                Text("A little curiosity. A lot of possibility.")
-            }.font(.system(size: 15)).foregroundStyle(Theme.muted).padding(.top, 12)
             if let project = store.project {
                 Menu {
                     ForEach(store.state.projects) { item in
@@ -72,13 +78,13 @@ struct ConversationView: View {
                 } label: {
                     HStack(spacing: 7) { Image(systemName: "folder"); Text(project.name); Image(systemName: "chevron.down").font(.system(size: 8)) }
                         .font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.muted).padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(Theme.sidebar).clipShape(Capsule()).contentShape(Capsule())
+                        .glassSurface(in: Capsule(), interactive: true).contentShape(Capsule())
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                 .help(project.path).accessibilityLabel("Project: \(project.name)")
-                .padding(.top, 21)
+                .padding(.top, 18)
             } else {
-                Button("Open a project") { store.addProject() }.buttonStyle(SubtleButtonStyle()).padding(.top, 22)
+                Button("Open a project") { store.addProject() }.buttonStyle(SubtleButtonStyle()).padding(.top, 20)
             }
             Spacer().frame(height: 48)
             HStack(spacing: 10) {
@@ -99,8 +105,8 @@ struct ConversationView: View {
                     Text(title).font(.system(size: 14, weight: .medium))
                     Text(subtitle).font(.system(size: 12)).foregroundStyle(Theme.muted)
                 }
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(17).background(Theme.surface.opacity(0.5))
-                .overlay(RoundedRectangle(cornerRadius: 11).stroke(Theme.line, lineWidth: 1)).contentShape(RoundedRectangle(cornerRadius: 11))
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(17)
+                .glassSurface(cornerRadius: 14, interactive: true).contentShape(RoundedRectangle(cornerRadius: 14))
         }.buttonStyle(.plain).disabled(store.project == nil)
     }
 

@@ -5,9 +5,15 @@ import AppKit
 /// the main window rebuilds its views when it does (see `ExtrasFeatureModel.themeRevision`).
 enum Theme {
     static func adaptive(_ light: UInt32, _ dark: UInt32) -> Color { Color(nsColor: adaptiveNS(light, dark)) }
-    static func adaptiveNS(_ light: UInt32, _ dark: UInt32) -> NSColor {
+    static func adaptiveNS(_ light: UInt32, _ dark: UInt32, alpha: CGFloat = 1) -> NSColor {
         NSColor(name: nil) { appearance in
-            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? rgb(dark) : rgb(light)
+            (appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? rgb(dark) : rgb(light)).withAlphaComponent(alpha)
+        }
+    }
+    /// Black in light mode and white in dark mode, at the given strengths: a fill that reads on any glass.
+    static func tintNS(light: CGFloat, dark: CGFloat) -> NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 1, alpha: dark) : NSColor(white: 0, alpha: light)
         }
     }
     static func rgb(_ value: UInt32) -> NSColor {
@@ -21,6 +27,7 @@ enum Theme {
 
     static var canvas: Color { palette.canvas }
     static var sidebar: Color { palette.sidebar }
+    static var sidebarBackground: Color { palette.sidebarBackground }
     static var surface: Color { palette.surface }
     static var input: Color { palette.input }
     static var hover: Color { palette.hover }
@@ -43,28 +50,36 @@ enum Theme {
 }
 
 /// One theme's colours. A class, so reading a colour through `Theme` copies a single reference.
+///
+/// `canvas` and `sidebarBackground` are the opaque colours the window's glass is tinted with
+/// (see `GlassBackdrop`). The default look's other roles are translucent tints, so cards, fields,
+/// and highlights take on whatever the glass shows; the terminal palettes keep their opaque colours.
 final class ThemePalette {
     let theme: GrokTheme
-    /// Only the default look uses translucent system materials; the terminal palettes are opaque.
+    /// The default look follows the system's materials; the terminal palettes tint the glass with their own colours.
     let usesSystemMaterials: Bool
     let canvasNS, sidebarNS, surfaceNS, inputNS, hoverNS, lineNS, inkNS, mutedNS: NSColor
     let accentNS, greenNS, redNS, codeBackgroundNS, inlineCodeNS, tableHeaderNS, tableStripeNS: NSColor
+    let sidebarBackgroundNS: NSColor
     let canvas, sidebar, surface, input, hover, line, ink, muted: Color
     let accent, green, red, codeBackground, inlineCode, tableHeader, tableStripe: Color
+    let sidebarBackground: Color
 
     init(theme: GrokTheme, usesSystemMaterials: Bool = false,
-         canvas: NSColor, sidebar: NSColor, surface: NSColor, input: NSColor, hover: NSColor, line: NSColor, ink: NSColor, muted: NSColor,
+         canvas: NSColor, sidebar: NSColor, sidebarBackground: NSColor? = nil, surface: NSColor, input: NSColor, hover: NSColor, line: NSColor, ink: NSColor, muted: NSColor,
          accent: NSColor, green: NSColor, red: NSColor, codeBackground: NSColor, inlineCode: NSColor, tableHeader: NSColor, tableStripe: NSColor) {
         self.theme = theme
         self.usesSystemMaterials = usesSystemMaterials
         canvasNS = canvas; sidebarNS = sidebar; surfaceNS = surface; inputNS = input; hoverNS = hover; lineNS = line; inkNS = ink; mutedNS = muted
         accentNS = accent; greenNS = green; redNS = red; codeBackgroundNS = codeBackground; inlineCodeNS = inlineCode
         tableHeaderNS = tableHeader; tableStripeNS = tableStripe
+        sidebarBackgroundNS = sidebarBackground ?? sidebar
         self.canvas = Color(nsColor: canvas); self.sidebar = Color(nsColor: sidebar); self.surface = Color(nsColor: surface)
         self.input = Color(nsColor: input); self.hover = Color(nsColor: hover); self.line = Color(nsColor: line)
         self.ink = Color(nsColor: ink); self.muted = Color(nsColor: muted); self.accent = Color(nsColor: accent)
         self.green = Color(nsColor: green); self.red = Color(nsColor: red); self.codeBackground = Color(nsColor: codeBackground)
         self.inlineCode = Color(nsColor: inlineCode); self.tableHeader = Color(nsColor: tableHeader); self.tableStripe = Color(nsColor: tableStripe)
+        self.sidebarBackground = Color(nsColor: sidebarBackgroundNS)
     }
 
     /// Terminal palettes are opaque colours from the pager's themes
@@ -78,14 +93,15 @@ final class ThemePalette {
                   tableHeader: Theme.rgb(tableHeader), tableStripe: Theme.rgb(tableStripe))
     }
 
-    /// The desktop's own look, following the system appearance. It is unchanged for anyone who never picks a theme.
+    /// The desktop's own look, following the system appearance: glass, with translucent fills.
     static let auto = ThemePalette(
         theme: .auto, usesSystemMaterials: true,
-        canvas: Theme.adaptiveNS(0xFAFAFC, 0x1C1C1E), sidebar: .windowBackgroundColor, surface: Theme.adaptiveNS(0xFFFFFF, 0x28282B),
-        input: Theme.adaptiveNS(0xF5F5F7, 0x222225), hover: Theme.adaptiveNS(0xE9E9ED, 0x353538), line: .separatorColor,
+        canvas: Theme.adaptiveNS(0xFAFAFC, 0x1C1C1E), sidebar: Theme.tintNS(light: 0.05, dark: 0.07), sidebarBackground: Theme.adaptiveNS(0xF4F4F7, 0x1E1E21),
+        surface: Theme.adaptiveNS(0xFFFFFF, 0x2C2C30, alpha: 0.66),
+        input: Theme.tintNS(light: 0.04, dark: 0.06), hover: Theme.tintNS(light: 0.065, dark: 0.09), line: .separatorColor,
         ink: .labelColor, muted: .secondaryLabelColor, accent: Theme.adaptiveNS(0x41634C, 0xA1BFA8), green: Theme.adaptiveNS(0x3B7751, 0x91C5A1),
-        red: Theme.adaptiveNS(0xB3261E, 0xF2877E), codeBackground: Theme.adaptiveNS(0xF3F3F6, 0x252528), inlineCode: Theme.adaptiveNS(0xEBEBEF, 0x333337),
-        tableHeader: Theme.adaptiveNS(0xF1F1F4, 0x2B2B2F), tableStripe: Theme.adaptiveNS(0xF9F9FB, 0x232326))
+        red: Theme.adaptiveNS(0xB3261E, 0xF2877E), codeBackground: Theme.tintNS(light: 0.045, dark: 0.055), inlineCode: Theme.tintNS(light: 0.065, dark: 0.09),
+        tableHeader: Theme.tintNS(light: 0.05, dark: 0.065), tableStripe: Theme.tintNS(light: 0.02, dark: 0.025))
 
     /// Grok Night: neutral grays with TokyoNight accents (groknight.rs).
     static let grokNight = ThemePalette(
@@ -129,36 +145,106 @@ final class ThemePalette {
     }
 }
 
+/// How much of the desktop shows through the windows: Settings › Appearance › Transparency.
+enum GlassPreference {
+    static let key = "windowTransparency"
+    /// 0 paints solid colours; 1 is the clearest glass.
+    static let defaultLevel = 0.8
+
+    static var level: Double { UserDefaults.standard.object(forKey: key) as? Double ?? defaultLevel }
+
+    /// How strongly a region's colour covers the blurred desktop, from 1 (solid) down.
+    /// The sidebar clears first and is bare glass from the default level up; the conversation
+    /// keeps enough colour to read comfortably; sheets stay the most solid.
+    /// The terminal palettes keep more of their own colour so each stays recognisable.
+    static func tintOpacity(for role: GlassBackdrop.Role, level: Double, systemLook: Bool) -> Double {
+        let clarity = min(1, max(0, level)) * (systemLook ? 1 : 0.6)
+        switch role {
+        case .canvas: return 1 - 0.78 * clarity
+        case .sidebar: return max(0, 1 - 1.15 * clarity)
+        case .panel: return 1 - 0.9 * clarity
+        case .sheet: return 1 - 0.5 * clarity
+        }
+    }
+}
+
+/// A window region's background: the blurred desktop behind the window, tinted with the theme's
+/// colour at the strength the Transparency setting asks for. With Reduce Transparency, or the
+/// setting at Solid, it is the solid colour.
+struct GlassBackdrop: View {
+    enum Role { case canvas, sidebar, panel, sheet }
+
+    var role: Role
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @AppStorage(GlassPreference.key) private var level = GlassPreference.defaultLevel
+
+    var body: some View {
+        let palette = Theme.palette
+        let effectiveLevel = reduceTransparency ? 0 : level
+        let opacity = GlassPreference.tintOpacity(for: role, level: effectiveLevel, systemLook: palette.usesSystemMaterials)
+        ZStack {
+            if opacity < 1 { BehindWindowBlur() }
+            (role == .sidebar ? palette.sidebarBackground : palette.canvas).opacity(opacity)
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+/// The desktop behind the window, blurred. Stays live while the window is inactive.
+private struct BehindWindowBlur: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .underWindowBackground
+        view.blendingMode = .behindWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+}
+
 extension View {
     /// Liquid Glass belongs to controls above content, rather than the transcript itself.
-    func glassSurface(cornerRadius: CGFloat = 16) -> some View {
-        modifier(GlassSurface(cornerRadius: cornerRadius))
+    func glassSurface(cornerRadius: CGFloat = 16, interactive: Bool = false) -> some View {
+        modifier(GlassSurface(shape: RoundedRectangle(cornerRadius: cornerRadius), interactive: interactive))
     }
-}
 
-extension View {
-    /// Paints the window toolbar in a terminal palette's canvas colour; the default look keeps the system's.
-    @ViewBuilder
+    func glassSurface<S: InsettableShape>(in shape: S, interactive: Bool = false) -> some View {
+        modifier(GlassSurface(shape: shape, interactive: interactive))
+    }
+
+    /// The window toolbar draws no background of its own, so the window's glass runs under it.
     func themedToolbarBackground() -> some View {
-        if Theme.palette.usesSystemMaterials { self }
-        else { toolbarBackground(Theme.canvas, for: .windowToolbar).toolbarBackground(.visible, for: .windowToolbar) }
+        toolbarBackground(.hidden, for: .windowToolbar)
+    }
+
+    /// A sheet's background: glass over the window behind it.
+    func glassSheetBackground() -> some View {
+        background { GlassBackdrop(role: .sheet).ignoresSafeArea() }
+    }
+
+    /// A secondary window's background, the same glass as the main window's conversation.
+    func glassWindowBackground() -> some View {
+        background { GlassBackdrop(role: .canvas).ignoresSafeArea() }
     }
 }
 
-private struct GlassSurface: ViewModifier {
+private struct GlassSurface<S: InsettableShape>: ViewModifier {
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    var cornerRadius: CGFloat
+    var shape: S
+    var interactive: Bool
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        // Glass tints itself from the system; a terminal palette keeps its own surface colour.
-        if reduceTransparency || !Theme.palette.usesSystemMaterials {
-            content.background(Theme.surface, in: RoundedRectangle(cornerRadius: cornerRadius))
-                .overlay(RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(Theme.line, lineWidth: 1))
+        if reduceTransparency {
+            content.background(Theme.surface, in: shape)
+                .overlay(shape.strokeBorder(Theme.line, lineWidth: 1))
         } else {
             #if compiler(>=6.2)
             if #available(macOS 26.0, *) {
-                content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: cornerRadius))
+                // The system tints its glass; a terminal palette's glass takes the palette's surface colour.
+                let tint: Color? = Theme.palette.usesSystemMaterials ? nil : Theme.surface.opacity(0.55)
+                content.glassEffect(interactive ? .regular.tint(tint).interactive() : .regular.tint(tint), in: shape)
             } else {
                 materialSurface(content)
             }
@@ -169,30 +255,14 @@ private struct GlassSurface: ViewModifier {
     }
 
     private func materialSurface(_ content: Content) -> some View {
-        content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: cornerRadius))
-            .overlay(RoundedRectangle(cornerRadius: cornerRadius).strokeBorder(Theme.line.opacity(0.6), lineWidth: 0.5))
+        content.background(Theme.palette.usesSystemMaterials ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(Theme.surface.opacity(0.85)), in: shape)
+            .overlay(shape.strokeBorder(Theme.line.opacity(0.6), lineWidth: 0.5))
     }
 }
 
+/// The sidebar's glass, the most transparent part of the window.
 struct SidebarMaterial: View {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-    var body: some View {
-        if reduceTransparency || !Theme.palette.usesSystemMaterials { Theme.sidebar }
-        else { NativeSidebarMaterial() }
-    }
-}
-
-private struct NativeSidebarMaterial: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = .sidebar
-        view.blendingMode = .behindWindow
-        view.state = .followsWindowActiveState
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
+    var body: some View { GlassBackdrop(role: .sidebar) }
 }
 
 struct IconButton: View {

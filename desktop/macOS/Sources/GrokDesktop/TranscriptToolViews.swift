@@ -266,9 +266,7 @@ private struct TranscriptTimelinePreview: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(width: 270, alignment: .leading)
-        .background(Theme.surface, in: RoundedRectangle(cornerRadius: 11))
-        .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(Theme.line.opacity(0.6), lineWidth: 0.5))
-        .shadow(color: .black.opacity(0.14), radius: 10, y: 3)
+        .glassSurface(cornerRadius: 11)
     }
 }
 

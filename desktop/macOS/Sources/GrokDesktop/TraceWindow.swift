@@ -61,7 +61,7 @@ struct TraceWindowContent: View {
             content.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 720, minHeight: 480)
-        .background(Theme.canvas)
+        .glassWindowBackground()
     }
 
     @ViewBuilder private var content: some View {

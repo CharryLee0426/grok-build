@@ -47,16 +47,18 @@ struct ContentView: View {
                     .padding(.horizontal, 24).padding(.vertical, 10)
                     .background(Theme.hover.opacity(0.7))
                 }
-                HStack(spacing: 0) {
-                    ConversationView().frame(maxWidth: .infinity)
-                    if store.showInspector {
-                        Divider().overlay(Theme.line)
-                        ChangesView().frame(width: 330)
+                GeometryReader { geometry in
+                    HStack(spacing: 0) {
+                        ConversationView().frame(maxWidth: .infinity)
+                        if store.showInspector {
+                            SidePanelView(containerWidth: geometry.size.width)
+                                .transition(.move(edge: .trailing).combined(with: .opacity))
+                        }
                     }
                 }
             }
             .overlay(alignment: .topTrailing) { DebugOverlay() }
-            .background(Theme.canvas)
+            .background { GlassBackdrop(role: .canvas).ignoresSafeArea() }
             .navigationTitle(store.conversation?.title ?? "New task")
             .navigationSubtitle(store.project?.name ?? "Your workspace")
             .toolbar { workspaceToolbar }
@@ -64,6 +66,8 @@ struct ContentView: View {
             .themedToolbarBackground()
         }
         .navigationSplitViewStyle(.balanced)
+        // Behind every column, so no opaque window background shows around the floating sidebar.
+        .background { GlassBackdrop(role: .sidebar).ignoresSafeArea() }
         .foregroundStyle(Theme.ink)
         .onChange(of: store.showSearch) { _, visible in
             if visible { columnVisibility = .all } else { store.search = "" }
@@ -86,24 +90,30 @@ struct ContentView: View {
     @ToolbarContentBuilder
     private var workspaceToolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            if store.project != nil {
-                Menu {
-                    Button("Reveal in Finder", systemImage: "folder") { store.revealProject() }
-                    Button("Open in Terminal", systemImage: "terminal") { store.openTerminal() }
-                } label: { Label("Open", systemImage: "arrow.up.right.square") }
-                .help("Open project")
+            if let project = store.project {
+                Button { store.revealProject() } label: {
+                    Label { Text("Reveal in Finder") } icon: { Image(nsImage: FinderIcon.image).renderingMode(.original) }
+                }
+                .help("Reveal \(project.name) in Finder")
                 Button {
                     withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { store.showInspector.toggle() }
                 } label: {
-                    Label {
-                        Text(store.workspace.changes.isEmpty ? "Changes" : "Changes (\(store.workspace.changes.count))")
-                    } icon: {
-                        Image(systemName: "sidebar.right")
-                    }
-                }.help("Show changes · ⌘J")
+                    Label("Side panel", systemImage: "sidebar.right")
+                }.help(store.showInspector ? "Hide side panel · ⌘J" : "Show files, side chat, and terminal · ⌘J")
             }
         }
     }
+}
+
+/// Finder's own icon, for the toolbar's Reveal in Finder button.
+@MainActor
+enum FinderIcon {
+    static let image: NSImage = {
+        let path = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.finder")?.path ?? "/System/Library/CoreServices/Finder.app"
+        let icon = (NSWorkspace.shared.icon(forFile: path).copy() as? NSImage) ?? NSImage()
+        icon.size = NSSize(width: 18, height: 18)
+        return icon
+    }()
 }
 
 struct RenameTaskSheet: View {
@@ -125,7 +135,7 @@ struct RenameTaskSheet: View {
                     .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }.buttonStyle(SubtleButtonStyle()).font(.system(size: 13, weight: .medium))
         }
-        .padding(24).frame(width: 460).background(Theme.surface)
+        .padding(24).frame(width: 460).glassSheetBackground()
         .onAppear { title = store.conversation?.title ?? "" }
     }
 

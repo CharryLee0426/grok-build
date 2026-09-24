@@ -6,6 +6,10 @@ import AppKit
 struct ComposerView: View {
     @EnvironmentObject var store: AppStore
     @EnvironmentObject var features: ComposerFeatureModel
+    @EnvironmentObject var attachments: PromptAttachmentsModel
+    /// A drag over the card, and one over the text view, which handles its own drops.
+    @State private var cardDropTargeted = false
+    @State private var editorDropTargeted = false
     @State private var showModels = false
     @State private var showTools = false
     @State private var showReasoning = false
@@ -16,7 +20,6 @@ struct ComposerView: View {
     @State private var selectedCommand = 0
     @State private var dismissedCommandDraft: String?
     @State private var hoveringEditor = false
-    @AppStorage("composerMultiline") private var composerMultiline = false
 
     var body: some View {
         VStack(spacing: 10) {
@@ -48,27 +51,17 @@ struct ComposerView: View {
         }
     }
 
+    @ViewBuilder
     private var footer: some View {
-        GeometryReader { geometry in
-            HStack(spacing: 7) {
-                if !store.workspace.branch.isEmpty {
-                    Image(systemName: "arrow.triangle.branch")
-                    Text(store.workspace.branch).fontWeight(.medium).truncationMode(.middle)
-                }
-                if geometry.size.width > 420 || store.workspace.branch.isEmpty {
-                    if !store.workspace.branch.isEmpty { Text("·") }
-                    Text(store.project == nil ? "Choose a project to get started" : "Local workspace")
-                }
-                Spacer(minLength: 4)
-                Text(geometry.size.width > 560 ? keyHints : "/ Commands").fixedSize()
-            }.font(.system(size: 12)).lineLimit(1).foregroundStyle(Theme.muted)
-        }.frame(height: 16).padding(.horizontal, 5)
-    }
-
-    private var keyHints: String {
-        let send = composerMultiline ? "⌘↵" : "↵", newLine = composerMultiline ? "↵ New line" : "⇧↵ New line"
-        if canQueue { return "/ Commands  ·  \(send) \(features.followUpBehavior == .steer ? "Steer" : "Queue")  ·  \(newLine)" }
-        return "/ Commands  ·  \(send) Send  ·  \(newLine)"
+        if store.project != nil && !store.workspace.branch.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.branch")
+                Text(store.workspace.branch).fontWeight(.medium).truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 12)).lineLimit(1).foregroundStyle(Theme.muted)
+            .frame(height: 16).padding(.horizontal, 5)
+        }
     }
 
     private var optionsDisabled: Bool { store.run.isRunning || store.run.isConfiguring }
@@ -79,13 +72,15 @@ struct ComposerView: View {
     }
     private var isLiveCommand: Bool { turnPolicy == .runNow }
     private var hasDraftText: Bool { !store.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// A prompt can be only attachments, once every image is ready to send.
+    private var hasContent: Bool { hasDraftText || (!attachments.current.isEmpty && !attachments.isPreparing) }
     /// While a task runs, Return adds the prompt to its queue (or steers the turn).
     private var canQueue: Bool {
-        hasDraftText && store.run.isRunning && !store.run.isConfiguring && turnPolicy == .queue && store.state.selectedConversationID != nil && store.project != nil
+        hasContent && store.run.isRunning && !store.run.isConfiguring && turnPolicy == .queue && store.state.selectedConversationID != nil && store.project != nil
     }
     private var canSend: Bool {
         // Return on a command that needs an idle task explains why instead of doing nothing.
-        hasDraftText && store.project != nil && (!optionsDisabled || (store.run.isRunning && turnPolicy != .queue) || canQueue)
+        hasContent && store.project != nil && (!optionsDisabled || (store.run.isRunning && turnPolicy != .queue) || canQueue)
     }
     private var voiceAvailable: Bool { store.harnessMeta.voiceMode && store.project != nil }
     private var draftLineCount: Int { store.draft.reduce(1) { $1 == "\n" ? $0 + 1 : $0 } }
@@ -103,15 +98,23 @@ struct ComposerView: View {
 
     private var editorCard: some View {
         let lines = draftLineCount
+        let pending = attachments.current
         return VStack(alignment: .leading, spacing: 12) {
             VoiceRecordingRow(voice: features.voice) { features.stopVoice() }
+            if !pending.isEmpty {
+                ComposerAttachmentStrip(attachments: pending, onRemove: { attachments.remove($0) }, onPreview: { attachments.preview($0) })
+                    .padding(.bottom, -4)
+            }
             ZStack(alignment: .topLeading) {
                 if store.draft.isEmpty {
                     Text(placeholder)
                         .font(.system(size: 16)).foregroundStyle(Theme.muted).padding(.top, 8).padding(.leading, 5).allowsHitTesting(false)
                 }
                 PromptEditor(text: $store.draft, onSubmit: submitDraft, onCommandKey: handleComposerKey,
-                             onTextView: { [weak model = features] view in model?.promptTextView = view })
+                             onTextView: { [weak model = features] view in model?.promptTextView = view },
+                             onPasteAttachments: { [weak attachments] pasteboard in attachments?.paste(from: pasteboard) ?? false },
+                             onDropAttachments: { [weak attachments] pasteboard in attachments?.drop(from: pasteboard) ?? false },
+                             onAttachmentDragChanged: { targeted in editorDropTargeted = targeted })
                     .frame(height: lines > 3 ? 120 : 76)
             }
             .overlay(alignment: .topTrailing) {
@@ -149,7 +152,10 @@ struct ComposerView: View {
                 }
             }.frame(height: 40)
         }.padding(16).glassSurface(cornerRadius: 24)
-            .overlay(alignment: .bottom) {
+            .overlay { if cardDropTargeted || editorDropTargeted { AttachmentDropOverlay(cornerRadius: 24) } }
+            .onDrop(of: [.fileURL, .image], isTargeted: $cardDropTargeted) { providers in attachments.add(providers: providers) }
+            .quickLookPreview($attachments.previewURL)
+            .overlay(alignment: .top) {
                 if showSlashCommands {
                     VStack(spacing: 0) {
                         HStack { Text("Commands & skills").fontWeight(.medium); Spacer(); Text("↑↓ Select  ·  ⇥ Complete  ·  esc Close") }
@@ -157,10 +163,10 @@ struct ComposerView: View {
                         Divider()
                         CommandList(commands: slashCommands, selected: selectedCommand, onSelect: chooseCommand)
                             .frame(height: min(300, max(80, CGFloat(slashCommands.count) * 65)))
-                    }.background(Theme.surface, in: RoundedRectangle(cornerRadius: 14))
-                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.line))
-                        .shadow(color: .black.opacity(0.12), radius: 18, y: 5)
-                        .padding(.bottom, lines > 3 ? 219 : 175)
+                    }
+                    .glassSurface(cornerRadius: 14)
+                    // Sits just above the card, however tall attachments make it.
+                    .alignmentGuide(.top) { dimensions in dimensions[.bottom] + 10 }
                 }
             }
     }
@@ -220,10 +226,15 @@ struct ComposerView: View {
         Button { showTools.toggle() } label: {
             Image(systemName: "plus").font(.system(size: 22, weight: .medium))
                 .frame(width: 40, height: 40).contentShape(Circle())
-        }.buttonStyle(ComposerControlStyle()).help("Commands, skills, and tools")
-            .accessibilityLabel("Add tools and commands")
+        }.buttonStyle(ComposerControlStyle()).help("Attach files, or use commands, skills, and tools")
+            .accessibilityLabel("Add attachments, tools, and commands")
             .popover(isPresented: $showTools, arrowEdge: .top) {
                 VStack(alignment: .leading, spacing: 2) {
+                    toolAction("Add photos & files", symbol: "paperclip") { attachments.chooseFiles() }
+                        .disabled(store.project == nil)
+                    toolAction("Add folder", symbol: "folder.badge.plus") { attachments.chooseFolder() }
+                        .disabled(store.project == nil)
+                    Divider().padding(.vertical, 5)
                     Text("Tools & commands").font(.system(size: 12, weight: .medium)).foregroundStyle(Theme.muted).padding(12)
                     toolAction("Commands", symbol: "command", shortcut: "⇧⌘P") { store.showCommandPalette = true }
                     Divider().padding(.vertical, 5)
@@ -560,9 +571,14 @@ struct PromptEditor: NSViewRepresentable {
     var onCommandKey: ((UInt16) -> Bool)? = nil
     /// Hands out the text view so dictation can insert at the cursor.
     var onTextView: ((NSTextView) -> Void)? = nil
+    /// Pasted and dropped files and images; return true when they became attachments.
+    var onPasteAttachments: ((NSPasteboard) -> Bool)? = nil
+    var onDropAttachments: ((NSPasteboard) -> Bool)? = nil
+    var onAttachmentDragChanged: ((Bool) -> Void)? = nil
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.drawsBackground = false; scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
         let editor = SubmitTextView(); editor.delegate = context.coordinator; editor.onSubmit = onSubmit; editor.onCommandKey = onCommandKey
+        editor.onPasteAttachments = onPasteAttachments; editor.onDropAttachments = onDropAttachments; editor.onAttachmentDragChanged = onAttachmentDragChanged
         editor.isRichText = false; editor.isAutomaticQuoteSubstitutionEnabled = false; editor.isAutomaticDashSubstitutionEnabled = false
         editor.font = .systemFont(ofSize: 16); editor.textColor = .labelColor; editor.backgroundColor = .clear
         editor.textContainerInset = NSSize(width: 0, height: 7); editor.isVerticallyResizable = true; editor.isHorizontallyResizable = false
@@ -577,6 +593,9 @@ struct PromptEditor: NSViewRepresentable {
         if editor.string != text { editor.string = text }
         editor.onSubmit = onSubmit
         editor.onCommandKey = onCommandKey
+        editor.onPasteAttachments = onPasteAttachments
+        editor.onDropAttachments = onDropAttachments
+        editor.onAttachmentDragChanged = onAttachmentDragChanged
         context.coordinator.parent = self
     }
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -590,7 +609,46 @@ struct PromptEditor: NSViewRepresentable {
 final class SubmitTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onCommandKey: ((UInt16) -> Bool)?
+    var onPasteAttachments: ((NSPasteboard) -> Bool)?
+    var onDropAttachments: ((NSPasteboard) -> Bool)?
+    var onAttachmentDragChanged: ((Bool) -> Void)?
     private var focusObserver: NSObjectProtocol?
+
+    override var acceptableDragTypes: [NSPasteboard.PasteboardType] {
+        super.acceptableDragTypes + [.fileURL] + PromptAttachmentsModel.imageTypes
+    }
+
+    override func paste(_ sender: Any?) {
+        if onPasteAttachments?(.general) == true { return }
+        super.paste(sender)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard onDropAttachments != nil, PromptAttachmentsModel.carriesAttachments(sender.draggingPasteboard) else { return super.draggingEntered(sender) }
+        onAttachmentDragChanged?(true)
+        return .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard onDropAttachments != nil, PromptAttachmentsModel.carriesAttachments(sender.draggingPasteboard) else { return super.draggingUpdated(sender) }
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        onAttachmentDragChanged?(false)
+        super.draggingExited(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let onDropAttachments, PromptAttachmentsModel.carriesAttachments(sender.draggingPasteboard) else { return super.performDragOperation(sender) }
+        onAttachmentDragChanged?(false)
+        return onDropAttachments(sender.draggingPasteboard)
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {
+        onAttachmentDragChanged?(false)
+        super.concludeDragOperation(sender)
+    }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }

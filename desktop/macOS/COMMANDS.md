@@ -104,7 +104,7 @@ The registry contains 75 pager commands.
 | [`/always-approve`](../../crates/codegen/xai-grok-pager/src/slash/commands/always_approve.rs) | `/yolo` (shell) | `/always-approve [on\|off]` | Native: composer permission menu; sends `_x.ai/yolo_mode_changed` to every task, saves `[ui].permission_mode`, answers waiting permission requests once enabled |
 | [`/announcements`](../../crates/codegen/xai-grok-pager/src/slash/commands/announcements.rs) | — | `/announcements hide \| show` | Native: banner from `_x.ai/announcements/update` with CTA and Hide; hidden ids shared through `$GROK_HOME/announcements.json`; listed only while announcements exist |
 | [`/auto`](../../crates/codegen/xai-grok-pager/src/slash/commands/auto.rs) | — | `/auto` | Native: toggles Auto ↔ Ask via the permission menu; honours the Auto gate from env, config, and `x.ai/settings/update` |
-| [`/btw`](../../crates/codegen/xai-grok-pager/src/slash/commands/btw.rs) | — | `/btw <question>` | Native side-question panel over `_x.ai/btw`; runs while the main turn continues |
+| [`/btw`](../../crates/codegen/xai-grok-pager/src/slash/commands/btw.rs) | — | `/btw <question>` | Asks in the side panel's Side chat over `_x.ai/btw`; runs while the main turn continues, and each task keeps its thread. Bare `/btw` opens the Side chat |
 | [`/cd`](../../crates/codegen/xai-grok-pager/src/slash/commands/cd.rs) | — | `/cd [path]` | Native: chooses the project for new tasks (folder picker without a path); running tasks stay put |
 | [`/compact`](../../crates/codegen/xai-grok-pager/src/slash/commands/compact.rs) | — | `/compact [instructions]` | Native: `_x.ai/compact_conversation` with an inline status row; queued behind a running turn |
 | [`/compact-mode`](../../crates/codegen/xai-grok-pager/src/slash/commands/compact_mode.rs) | — | `/compact-mode` | Native conversation density toggle |
@@ -291,7 +291,16 @@ Sources: [mode dispatch](../../crates/codegen/xai-grok-pager/src/app/dispatch/mo
   and stop behavior belong to the harness; do not infer success from button clicks.
 - `_x.ai/btw {sessionId, question}` returns `result.answer` independently of the
   main turn. It can run while the main turn is active; it is not a normal queued
-  message. Additional optional `content` supports ACP text and image blocks.
+  message. Additional optional `content` supports ACP text and image blocks. Each
+  call is answered on its own, so the desktop's Side chat sends the task's recent
+  answered exchanges ahead of a follow-up question.
+- Prompt attachments travel in `session/prompt` after the text block: images as
+  `{type:"image", data, mimeType}` (PNG, JPEG, GIF, or WebP; larger images are
+  downscaled to 2048 px and about 3.5 MB), files as `resource_link` blocks with a
+  `file://` URI, and folders as `resource_link` blocks with
+  `_meta: {"x.ai/kind": "directory"}` so the harness lists them without trying to
+  inline them. The harness echoes each block as `user_message_chunk`, which the
+  desktop replays as attachments.
 - `_x.ai/recap {sessionId,auto:false}` acknowledges with wrapped `{ok:true}`;
   `{ok:true,disabled:true}` means the feature is disabled. The result arrives via
   `session_recap {summary,auto:false}` or `session_recap_unavailable`. The desktop
@@ -325,7 +334,7 @@ Sources: [mode dispatch](../../crates/codegen/xai-grok-pager/src/app/dispatch/mo
 These commands configure or launch Grok itself. They are not slash commands and
 should not be inserted into `session/prompt`. Native account, project, extensions,
 and task controls can cover applicable operations; process maintenance and
-terminal transport commands remain available through **Open in Terminal**.
+terminal transport commands remain available in the side panel's **Terminal**.
 
 | CLI family | Subcommands / primary operation | Source |
 | --- | --- | --- |

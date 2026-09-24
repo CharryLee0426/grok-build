@@ -9,13 +9,16 @@ struct NativeSearchField: View {
     var onEscape: () -> Void
     var onSubmit: (() -> Void)? = nil
     var onMove: ((Int) -> Void)? = nil
+    /// Sheets and popovers take the keyboard as they open; a field in a panel waits to be clicked.
+    var focusesOnAppear = true
     @State private var focused = false
     @State private var focusRequest = 0
 
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: "magnifyingglass").font(.system(size: 14)).foregroundStyle(Theme.muted).accessibilityHidden(true)
-            NativeSearchInput(text: $text, focused: $focused, focusRequest: focusRequest, placeholder: placeholder, onEscape: onEscape, onSubmit: onSubmit, onMove: onMove)
+            NativeSearchInput(text: $text, focused: $focused, focusRequest: focusRequest, placeholder: placeholder, onEscape: onEscape, onSubmit: onSubmit, onMove: onMove,
+                              focusesOnAppear: focusesOnAppear)
                 .frame(height: 20)
             if !text.isEmpty {
                 Button { text = ""; focusRequest += 1 } label: {
@@ -38,9 +41,11 @@ private struct NativeSearchInput: NSViewRepresentable {
     var onEscape: () -> Void
     var onSubmit: (() -> Void)?
     var onMove: ((Int) -> Void)?
+    var focusesOnAppear: Bool
 
     func makeNSView(context: Context) -> FocusedSearchField {
         let field = FocusedSearchField()
+        field.focusesOnAppear = focusesOnAppear
         field.delegate = context.coordinator
         field.onFocus = { context.coordinator.parent.focused = true }
         field.placeholderString = placeholder
@@ -91,6 +96,7 @@ private struct NativeSearchInput: NSViewRepresentable {
 
 final class FocusedSearchField: NSSearchField {
     var onFocus: (() -> Void)?
+    var focusesOnAppear = true
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted { DispatchQueue.main.async { [weak self] in self?.onFocus?() } }
@@ -98,7 +104,7 @@ final class FocusedSearchField: NSSearchField {
     }
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        guard window != nil else { return }
+        guard window != nil, focusesOnAppear else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self, let window = self.window else { return }
             window.makeFirstResponder(self)

@@ -101,7 +101,7 @@ struct TranscriptView: View {
                 if store.run.isRunning {
                     Button { followOutput.toggle(); if followOutput { proxy.scrollTo("bottom", anchor: .bottom) } } label: {
                         Label(followOutput ? "Following" : "Follow output", systemImage: followOutput ? "arrow.down.to.line" : "arrow.down")
-                            .font(.system(size: 12)).padding(7).background(Theme.surface).clipShape(Capsule())
+                            .font(.system(size: 12)).padding(.horizontal, 10).padding(.vertical, 7).glassSurface(in: Capsule())
                     }.buttonStyle(.plain).foregroundStyle(Theme.muted).padding(.trailing, 22)
                 }
             }
@@ -127,6 +127,7 @@ struct MessageView: View, Equatable {
         return lhs.isStreaming == rhs.isStreaming && lhs.timestamp == rhs.timestamp && lhs.highlight == rhs.highlight && lhs.isExpanded == rhs.isExpanded
             && a.id == b.id && a.kind == b.kind && a.status == b.status && a.toolID == b.toolID
             && same(a.text, b.text) && (a.detail == nil) == (b.detail == nil) && same(a.detail ?? "", b.detail ?? "")
+            && a.attachments?.map(\.id) == b.attachments?.map(\.id)
     }
 
     /// Streamed text only grows, so the length usually settles it without reading the text.
@@ -144,13 +145,18 @@ struct MessageView: View, Equatable {
             HStack(alignment: .top, spacing: 10) {
                 Spacer(minLength: 48)
                 if let timestamp { TranscriptTimestampLabel(date: timestamp).padding(.top, 16) }
-                Group {
-                    if message.text.utf8.count > Self.longPromptBytes {
-                        ReadOnlyTextView(text: message.text, style: .body, sizing: .fitContent(maxHeight: 420))
-                    } else {
-                        Text(message.text).font(.system(size: 16)).textSelection(.enabled)
+                VStack(alignment: .trailing, spacing: 8) {
+                    if let attachments = message.attachments, !attachments.isEmpty { SentAttachmentsView(attachments: attachments) }
+                    if !message.text.isEmpty {
+                        Group {
+                            if message.text.utf8.count > Self.longPromptBytes {
+                                ReadOnlyTextView(text: message.text, style: .body, sizing: .fitContent(maxHeight: 420))
+                            } else {
+                                Text(message.text).font(.system(size: 16)).textSelection(.enabled)
+                            }
+                        }.padding(.horizontal, 17).padding(.vertical, 13).background(Theme.sidebar).clipShape(RoundedRectangle(cornerRadius: 16))
                     }
-                }.padding(.horizontal, 17).padding(.vertical, 13).background(Theme.sidebar).clipShape(RoundedRectangle(cornerRadius: 16))
+                }
             }
         case .assistant:
             VStack(alignment: .leading, spacing: 12) {

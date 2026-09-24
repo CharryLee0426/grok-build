@@ -78,11 +78,12 @@ final class ComposerFeatureModel: ObservableObject {
     }
 
     /// Called by `AppStore.send` while a turn is running. Return true when the prompt was queued.
-    func enqueue(_ prompt: String, conversationID: UUID) -> Bool {
+    /// Prompts with attachments always queue: steering carries text only.
+    func enqueue(_ prompt: String, attachments: [PromptAttachment] = [], conversationID: UUID) -> Bool {
         // A settings change is not a turn: Send stays blocked until the new settings are confirmed.
         guard let store, store.task(conversationID) != nil, store.runs[conversationID]?.isConfiguring != true else { return false }
-        if followUpBehavior == .steer, SlashCommand.split(prompt) == nil, steer(prompt, conversationID: conversationID) { return true }
-        queue.append(prompt, to: conversationID)
+        if followUpBehavior == .steer, attachments.isEmpty, SlashCommand.split(prompt) == nil, steer(prompt, conversationID: conversationID) { return true }
+        queue.append(prompt, attachments: attachments, to: conversationID)
         queuePanelExpanded = true
         watch(conversationID)
         return true
@@ -206,7 +207,7 @@ final class ComposerFeatureModel: ObservableObject {
         queue.resume(conversationID)
         _ = queue.popNext(for: conversationID)
         if let instructions = next.compactInstructions { runCompaction(conversationID, instructions: instructions) }
-        else { sendQueuedPrompt(next.text, to: conversationID) }
+        else { sendQueuedPrompt(next.text, attachments: next.attachments, to: conversationID) }
     }
 
     /// Operations other than prompt turns (loading history, changing settings, compacting) end
@@ -222,12 +223,12 @@ final class ComposerFeatureModel: ObservableObject {
 
     /// Sends a queued prompt to its task, which need not be the selected one. This mirrors the
     /// prompt path of `AppStore.send` without touching the composer draft.
-    private func sendQueuedPrompt(_ prompt: String, to id: UUID) {
+    private func sendQueuedPrompt(_ prompt: String, attachments: [PromptAttachment] = [], to id: UUID) {
         guard let store, let task = store.task(id), let project = store.state.projects.first(where: { $0.id == task.projectID }) else { return }
         guard FileManager.default.isExecutableFile(atPath: store.binaryPath) else {
             store.banner = "The bundled Grok runtime is missing. Reinstall Grok Desktop to start a task."; return
         }
-        let message = Message(kind: .user, text: prompt, createdAt: Date())
+        let message = Message(kind: .user, text: prompt, createdAt: Date(), attachments: attachments.isEmpty ? nil : attachments.map(\.messageAttachment))
         store.append(message, to: id)
         store.pendingPrompts[id] = message
         let operationID = store.beginOperation(id, phase: "Connecting")
@@ -244,7 +245,7 @@ final class ComposerFeatureModel: ObservableObject {
                 }
                 store.pendingPrompts.removeValue(forKey: id)
                 store.runs[id]?.phase = "Working"
-                let result = try await client.request("session/prompt", params: ["sessionId": session, "prompt": [["type": "text", "text": prompt]]], timeout: nil)
+                let result = try await client.request("session/prompt", params: ["sessionId": session, "prompt": PromptBlocks.make(text: prompt, attachments: attachments)], timeout: nil)
                 try store.checkOperation(id, operationID: operationID)
                 store.flushTranscript(id)
                 let stopped = store.cancellationRequested.contains(id) || result["stopReason"] as? String == "cancelled"

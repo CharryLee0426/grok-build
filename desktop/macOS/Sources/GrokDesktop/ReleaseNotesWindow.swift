@@ -102,7 +102,7 @@ struct ReleaseNotesWindow: View {
             content.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 560, minHeight: 440)
-        .background(Theme.surface)
+        .glassWindowBackground()
         .task { if loadsOnAppear && state.markdown == nil && !state.isLoading { account.loadReleaseNotes() } }
     }
 

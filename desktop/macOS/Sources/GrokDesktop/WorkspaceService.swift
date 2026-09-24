@@ -39,6 +39,58 @@ struct WorkspaceService: Sendable {
         }.value
     }
 
+    /// The files under `path`, relative to it: in a repository, tracked and untracked files
+    /// without ignored or deleted ones; elsewhere (or in a folder Git ignores entirely), what is
+    /// on disk, skipping build output.
+    func listFiles(path: String, limit: Int = 50_000) async -> (files: [String], truncated: Bool) {
+        await Task.detached(priority: .userInitiated) {
+            if let listed = Self.gitFiles(path: path, limit: limit), !listed.files.isEmpty { return listed }
+            return Self.diskFiles(path: path, limit: limit)
+        }.value
+    }
+
+    private static func gitFiles(path: String, limit: Int) -> (files: [String], truncated: Bool)? {
+        let listed = git(["ls-files", "-z", "--cached", "--others", "--exclude-standard"], at: path, limit: 64 * 1_024 * 1_024)
+        guard listed.code == 0 else { return nil }
+        let deletedResult = git(["ls-files", "-z", "--deleted"], at: path)
+        let deleted = deletedResult.code == 0 ? Set(names(deletedResult.data)) : []
+        var seen = Set<String>()
+        var files: [String] = []
+        for name in names(listed.data) where !deleted.contains(name) && seen.insert(name).inserted {
+            if files.count == limit { return (files, true) }
+            files.append(name)
+        }
+        return (files, listed.truncated)
+    }
+
+    private static func names(_ data: Data) -> [String] {
+        data.split(separator: 0).map { String(decoding: $0, as: UTF8.self) }
+    }
+
+    /// Directories that hold dependencies or build output rather than the project's own files.
+    static let skippedDirectories: Set<String> = [".git", "node_modules", ".build", "build", "dist", "target", "DerivedData", "Pods", ".venv", "venv", "__pycache__", ".next", ".swiftpm"]
+
+    private static func diskFiles(path: String, limit: Int) -> (files: [String], truncated: Bool) {
+        let root = URL(fileURLWithPath: path, isDirectory: true).standardizedFileURL
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys, options: [.skipsPackageDescendants]) else { return ([], false) }
+        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        var files: [String] = []
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            if values?.isDirectory == true && values?.isSymbolicLink != true {
+                if skippedDirectories.contains(url.lastPathComponent) { enumerator.skipDescendants() }
+                continue
+            }
+            if url.lastPathComponent == ".DS_Store" { continue }
+            let full = url.standardizedFileURL.path
+            guard full.hasPrefix(prefix) else { continue }
+            if files.count == limit { return (files, true) }
+            files.append(String(full.dropFirst(prefix.count)))
+        }
+        return (files, false)
+    }
+
     private struct GitResult {
         let code: Int32
         let data: Data

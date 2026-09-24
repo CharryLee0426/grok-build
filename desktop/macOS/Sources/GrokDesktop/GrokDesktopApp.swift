@@ -51,6 +51,8 @@ private struct AppCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Task") { store.newTask() }.keyboardShortcut("n")
             Button("Open Project…") { store.addProject() }.keyboardShortcut("o", modifiers: [.command, .shift])
+            Button("Attach Photos & Files…") { store.features.attachments.chooseFiles() }.keyboardShortcut("u").disabled(!menu.hasProject)
+            Button("Attach Folder…") { store.features.attachments.chooseFolder() }.disabled(!menu.hasProject)
             Button("Search Tasks") { store.showSearch.toggle() }.keyboardShortcut("k")
             Button("Commands…") { store.showCommandPalette = true }.keyboardShortcut("p", modifiers: [.command, .shift])
         }
@@ -65,8 +67,10 @@ private struct AppCommands: Commands {
             Button("Stop") { store.cancel() }.keyboardShortcut(".").disabled(!menu.isRunning)
             Button("Import Harness Tasks") { store.syncHistory() }.disabled(!menu.hasProject || menu.isSyncing)
             Divider()
-            Button("Show Changes") { store.showInspector.toggle() }.keyboardShortcut("j")
-            Button("Open in Terminal") { store.openTerminal() }.disabled(!menu.hasProject)
+            Button("Side Panel") { store.toggleSidePanel() }.keyboardShortcut("j")
+            Button("Files") { store.showSidePanel(.files) }.disabled(!menu.hasProject)
+            Button("Side Chat") { store.showSidePanel(.sideChat); store.features.sideChat.requestFocus() }
+            Button("Terminal") { store.openTerminal() }.keyboardShortcut("`", modifiers: .control).disabled(!menu.hasProject)
             Button("Reveal Project in Finder") { store.revealProject() }.disabled(!menu.hasProject)
         }
         CommandGroup(replacing: .help) {
