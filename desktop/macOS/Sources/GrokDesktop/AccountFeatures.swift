@@ -793,7 +793,7 @@ struct AccountSettingsExtras: View {
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Sign out of xAI").font(.system(size: 14, weight: .semibold))
-                    Text("Removes the saved sign-in that Grok Desktop shares with the Grok CLI.")
+                    Text("Also signs out the Grok CLI.")
                         .font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
@@ -808,7 +808,7 @@ struct AccountSettingsExtras: View {
             Button("Cancel", role: .cancel) {}
             Button("Sign Out", role: .destructive) { Task { await account.signOut() } }
         } message: {
-            Text("Grok Desktop and the Grok CLI share this sign-in. Running tasks keep going; new prompts will ask you to sign in again.")
+            Text("This also signs out the Grok CLI. Running tasks continue; new prompts ask you to sign in.")
         }
     }
 }

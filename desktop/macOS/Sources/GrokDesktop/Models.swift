@@ -199,6 +199,11 @@ extension DesktopState {
     }
 }
 
+enum DesktopVersion {
+    /// Packaging writes `desktop/macOS/VERSION` into Info.plist; unpackaged development runs have none.
+    static var current: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0.0" }
+}
+
 enum DesktopPaths {
     static var stateFile: URL {
         if let path = ProcessInfo.processInfo.environment["GROK_DESKTOP_STATE_FILE"], path.hasPrefix("/") {

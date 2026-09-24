@@ -399,11 +399,7 @@ struct AppearanceSettingsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .firstTextBaseline) {
-                Label("Theme", systemImage: "paintpalette").font(.system(size: 15, weight: .semibold))
-                Spacer()
-                Text("Shared with the terminal as [ui].theme").font(.system(size: 12)).foregroundStyle(Theme.muted)
-            }
+            Label("Theme", systemImage: "paintpalette").font(.system(size: 15, weight: .semibold))
             LazyVGrid(columns: columns, spacing: 12) {
                 ForEach([GrokTheme.auto] + GrokTheme.concrete) { theme in
                     ThemeSettingsCard(theme: theme, isActive: theme == extras.activeTheme) { extras.setTheme(theme) }
@@ -421,7 +417,7 @@ struct AppearanceSettingsSection: View {
             }
             .disabled(reduceTransparency)
             if reduceTransparency {
-                Text("Reduce transparency is on in System Settings › Accessibility › Display, so windows stay solid.")
+                Text("Windows stay solid while Reduce Transparency is on.")
                     .font(.system(size: 12)).foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -444,8 +440,6 @@ private struct ThemeSettingsCard: View {
                     Spacer(minLength: 2)
                     if isActive { Image(systemName: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(Theme.accent) }
                 }
-                Text(theme == .auto ? "Follows the system" : theme.rawValue)
-                    .font(.system(size: 11, design: theme == .auto ? .default : .monospaced)).foregroundStyle(Theme.muted).lineLimit(1)
             }
             .padding(8)
             .background(hovered ? Theme.hover.opacity(0.6) : .clear, in: RoundedRectangle(cornerRadius: 11))

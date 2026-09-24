@@ -27,8 +27,6 @@ struct SettingsView: View {
                             Spacer()
                             IconButton(icon: "arrow.clockwise", help: "Refresh accounts") { accounts.refresh() }
                         }
-                        Text("Your connected accounts are shared with the Grok CLI.")
-                            .font(.system(size: 14)).foregroundStyle(Theme.muted)
                         VStack(spacing: 0) {
                             ForEach(AccountProvider.allCases) { provider in
                                 if provider != .xai { Divider().padding(.leading, 46) }
@@ -64,6 +62,7 @@ struct SettingsView: View {
                     .glassSurface(cornerRadius: 18)
                     DisplaySettingsSection()
                     BehaviorSettingsSection()
+                    CommandLineSettingsSection()
                 }
                 .padding(3)
             }
@@ -72,13 +71,13 @@ struct SettingsView: View {
 
             HStack(alignment: .top, spacing: 9) {
                 Image(systemName: "lock.shield")
-                Text("Tasks stay on this Mac. You review permissions in the conversation.")
+                Text("Most settings are shared with the Grok CLI. Tasks stay on this Mac.")
                     .lineSpacing(3)
             }
             .font(.system(size: 13)).foregroundStyle(Theme.muted)
 
             HStack {
-                Text("Grok Desktop · 0.1.0").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                Text("Grok Desktop · \(DesktopVersion.current)").font(.system(size: 12)).foregroundStyle(Theme.muted)
                 Spacer()
                 Button("Done") { dismiss() }
                     .buttonStyle(.borderedProminent)

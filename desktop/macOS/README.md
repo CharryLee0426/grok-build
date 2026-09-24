@@ -6,7 +6,28 @@ inspector to the existing agent runtime. The app launches `grok agent stdio` and
 communicates through ACP v1; the harness continues to run tools, manage sandboxing,
 and load provider credentials and configuration.
 
-## Requirements
+## Install
+
+Open `Grok-Desktop-<version>-arm64.dmg` and drag **Grok Desktop** to
+**Applications**. The app includes Grok Build, the same runtime and `grok` TUI as
+the CLI, so nothing else needs to be installed. It requires macOS 14 or later on
+Apple silicon. On first launch, sign in from **Settings › Accounts**.
+
+The disk image is ad hoc signed and not notarized, so macOS blocks the first launch
+with a message that it cannot verify the app. Open **System Settings › Privacy &
+Security**, click **Open Anyway** beside the Grok Desktop message, and confirm.
+macOS remembers the choice.
+
+To use Grok Build in a terminal, turn on **Settings › Command line › `grok` command
+in Terminal**. It links `/usr/local/bin/grok` to the app's copy of the TUI, so
+`grok` works in any terminal and updates when you install a newer Grok Desktop.
+macOS asks for an administrator password when that folder is not writable. The
+switch replaces another program's `grok` link only after you confirm, never
+replaces an installed file, and removes only its own link. If the app moves,
+Settings offers to repair the link. The terminal in the side panel runs the app's
+`grok` even with the switch off, unless another `grok` comes earlier in `PATH`.
+
+## Build requirements
 
 - macOS 14 Sonoma or later.
 - Xcode 15 or later, or compatible Command Line Tools with Swift 5.9+ and the
@@ -33,6 +54,9 @@ open "desktop/macOS/dist/Grok Desktop.app"
 
 # Or build and install it to ~/Applications:
 make deploy-desktop
+
+# Or build the installer disk image for new users:
+make dmg-desktop
 ```
 
 The repository default commands (`make`, `make build`, and `make deploy`) only
@@ -41,8 +65,13 @@ Use `make deploy-desktop DESKTOP_INSTALL_DIR=/Applications` to choose a differen
 app destination, provided it is writable.
 
 The packaging script embeds the release harness as `Contents/Resources/grok`,
-signs that executable, and then signs the app. To reuse an existing harness and
-skip its Rust build:
+signs that executable, and then signs the app. It also bundles the `grok` command's
+launcher, [`Resources/grok-command.sh`](Resources/grok-command.sh), as
+`Contents/Resources/bin/grok`: it runs the embedded harness with its self-updater
+off, and answers `grok update` by pointing to a newer Grok Desktop. The app's
+version comes from [`VERSION`](VERSION). Rebuilding while the app runs is safe;
+the running copy and its tasks keep their executables. To reuse an existing
+harness and skip its Rust build:
 
 ```sh
 make build-desktop GROK_BINARY="/absolute/path/to/grok"
@@ -147,7 +176,8 @@ quotes and GitHub callouts, tables with column alignment, links, images, and
 footnotes. LaTeX math (`$…$`, `$$…$$`, `\(…\)`, `\[…\]`, and environments such
 as `aligned`, `cases`, and `pmatrix`) is typeset natively with the system's STIX
 Two Math font, and copying typeset math copies its LaTeX. Code blocks are
-syntax-highlighted for over a hundred languages and have a Copy button. Thinking
+syntax-highlighted for over a hundred languages and have a Copy button. Each reply is
+one selectable text, so a selection can run across paragraphs, tables, and code. Thinking
 renders in a scrolling text view that follows the stream, so long reasoning stays
 responsive. `/timestamps`, `/timeline`, `/find` (⌘F), `/jump`, and `/vim-mode`
 add timestamps, a turn rail, search, a turn picker, and keyboard navigation.
@@ -230,7 +260,8 @@ The terminal runs your login shell with your privileges, exactly as Terminal
 does; it ends when you quit the app or restart it from the panel. Pasted and
 dragged image data waits in a temporary folder until it is sent. `/fork --worktree` (or the ask sheet)
 creates a git worktree and adds it as a project; `/trace` and `/export` run the
-bundled `grok` executable. Dictation needs microphone permission; it streams to
+bundled `grok` executable. After you open the app, it clears the download
+quarantine from its bundled `grok` so terminals can run it. Dictation needs microphone permission; it streams to
 xAI's speech-to-text service with an xAI sign-in, and otherwise uses on-device
 recognition. GBOOM runs at full speed only in release builds.
 
@@ -286,8 +317,21 @@ Swift shape directly. Each required icon size is rendered from vector paths.
 
 ## Distribution
 
-The generated app is **ad hoc signed for local use**, not Developer ID signed or
-notarized, and has no automatic updater. Rebuild to update it. `SIGN_IDENTITY`
-overrides the packaging signing identity, but the script does not perform
-notarization or provide a complete distribution pipeline. The app build targets
-the architecture of the build machine.
+`make dmg-desktop` builds the app and then runs
+[`scripts/build-dmg.sh`](scripts/build-dmg.sh), which writes
+`dist/Grok-Desktop-<version>-<arch>.dmg`: the app beside an **Applications**
+shortcut, laid out by Finder, with the app icon on the volume. The image is
+LZMA-compressed; set `DMG_FORMAT` to choose another `hdiutil` format, or
+`DMG_FINDER_LAYOUT=0` to skip the Finder step (for example without a login
+session). Before reporting success, the script mounts the finished image, checks
+the app's signature, and runs its `grok` command. It refuses to run while another
+volume named "Grok Desktop" is mounted, because Finder lays out the window by
+volume name.
+
+The generated app and image are **ad hoc signed**, not Developer ID signed or
+notarized, so each Mac asks its user to approve the first launch (see
+[Install](#install)). There is no automatic updater; users install a newer disk
+image to update, and the bundled `grok` command updates with it. `SIGN_IDENTITY`
+selects the signing identity for the app and the image, but the scripts do not
+enable the hardened runtime or notarize. The build targets the architecture of
+the build machine: a disk image built on Apple silicon runs only on Apple silicon.

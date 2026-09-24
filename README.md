@@ -111,16 +111,22 @@ open "desktop/macOS/dist/Grok Desktop.app"
 
 # Or build and install it to ~/Applications:
 make deploy-desktop
+
+# Or build the drag-to-Applications installer for new users:
+make dmg-desktop    # desktop/macOS/dist/Grok-Desktop-<version>-<arch>.dmg
 ```
 
 The desktop command first builds the release Rust harness and embeds it in the
-app. Set `GROK_BINARY=/path/to/grok` to reuse an existing harness and compile only
+app, so the app and its disk image need no separate Grok Build install. Its
+**Settings › Command line** switch links `/usr/local/bin/grok` to the bundled TUI
+for use in any terminal.
+Set `GROK_BINARY=/path/to/grok` to reuse an existing harness and compile only
 the desktop app. `DESKTOP_INSTALL_DIR` overrides the desktop install directory.
 It requires Swift 5.9+ and a macOS 14+ SDK; the desktop package has no external
 Swift dependencies.
-See the [desktop guide](desktop/macOS/README.md) for development builds,
-shortcuts, executable selection, and local data storage. The app is ad hoc signed
-for local use and does not include an automatic updater.
+See the [desktop guide](desktop/macOS/README.md) for installing, development
+builds, shortcuts, executable selection, and local data storage. The app and disk
+image are ad hoc signed, not notarized, and do not include an automatic updater.
 
 ## Documentation
 

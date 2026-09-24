@@ -80,25 +80,32 @@ struct SidebarView: View {
         }
         ForEach(store.state.projects) { project in
             let tasks = store.conversations(inProject: project.id)
-            let expanded = store.isProjectExpanded(project.id)
-            ProjectFolderRow(store: store, project: project, isExpanded: expanded,
-                             isActive: store.state.selectedProjectID == project.id && store.state.selectedConversationID == nil,
-                             runningCount: tasks.filter { store.runs[$0.id]?.isRunning == true }.count)
-                .equatable()
-            if expanded {
-                limited(tasks, key: project.id.uuidString, limit: Self.folderLimit, indent: 30) { taskRow($0, now: now, showsProject: false, indent: 30) }
-                if tasks.isEmpty {
-                    Text("No tasks yet").font(.system(size: 12)).foregroundStyle(Theme.muted)
-                        .padding(.leading, 30).padding(.vertical, 5)
+            let expanded = Binding(get: { store.isProjectExpanded(project.id) },
+                                   set: { if $0 != store.isProjectExpanded(project.id) { store.toggleProjectExpanded(project.id) } })
+            Fold(isExpanded: expanded, spacing: 1) { toggle, isOpen in
+                ProjectFolderRow(store: store, project: project, isExpanded: isOpen,
+                                 isActive: store.state.selectedProjectID == project.id && store.state.selectedConversationID == nil,
+                                 runningCount: tasks.filter { store.runs[$0.id]?.isRunning == true }.count, onToggle: toggle)
+                    .equatable()
+            } content: {
+                VStack(alignment: .leading, spacing: 1) {
+                    limited(tasks, key: project.id.uuidString, limit: Self.folderLimit, indent: 30) { taskRow($0, now: now, showsProject: false, indent: 30) }
+                    if tasks.isEmpty {
+                        Text("No tasks yet").font(.system(size: 12)).foregroundStyle(Theme.muted)
+                            .padding(.leading, 30).padding(.vertical, 5)
+                    }
                 }
             }
         }
         let recents = store.recentConversations
-        SidebarSectionHeader(title: "Recents", count: recents.count, isExpanded: $store.recentsExpanded)
-            .padding(.top, 6)
-        if store.recentsExpanded {
-            limited(recents, key: "recents", limit: Self.recentsLimit, indent: 8) { taskRow($0, now: now, showsProject: true, indent: 8) }
-            if recents.isEmpty { emptyNote("Your tasks will appear here.") }
+        Fold(isExpanded: $store.recentsExpanded, spacing: 1) { toggle, isOpen in
+            SidebarSectionHeader(title: "Recents", count: recents.count, isExpanded: isOpen, onToggle: toggle)
+                .padding(.top, 6)
+        } content: {
+            VStack(alignment: .leading, spacing: 1) {
+                limited(recents, key: "recents", limit: Self.recentsLimit, indent: 8) { taskRow($0, now: now, showsProject: true, indent: 8) }
+                if recents.isEmpty { emptyNote("Your tasks will appear here.") }
+            }
         }
     }
 
@@ -125,7 +132,7 @@ struct SidebarView: View {
         ForEach(showsAll ? tasks : Array(tasks.prefix(limit))) { row($0) }
         if tasks.count > limit {
             Button {
-                if showsAll { expandedLists.remove(key) } else { expandedLists.insert(key) }
+                FoldMotion.toggle { if showsAll { expandedLists.remove(key) } else { expandedLists.insert(key) } }
             } label: {
                 Text(showsAll ? "Show less" : "Show \(tasks.count - limit) more")
                     .font(.system(size: 12)).foregroundStyle(Theme.muted)
@@ -192,36 +199,35 @@ private struct SidebarNavigationRow: View {
 private struct SidebarSectionHeader<Accessory: View>: View {
     let title: String
     var count: Int? = nil
-    var isExpanded: Binding<Bool>? = nil
+    /// Set for a section that folds, with the action that folds it.
+    var isExpanded: Bool? = nil
+    var onToggle: () -> Void = {}
     @ViewBuilder var accessory: () -> Accessory
     @State private var hovered = false
 
-    init(title: String, count: Int? = nil, isExpanded: Binding<Bool>? = nil, @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }) {
+    init(title: String, count: Int? = nil, @ViewBuilder accessory: @escaping () -> Accessory = { EmptyView() }) {
         self.title = title
         self.count = count
-        self.isExpanded = isExpanded
         self.accessory = accessory
     }
 
     var body: some View {
         HStack(spacing: 4) {
             if let isExpanded {
-                Button {
-                    withTransaction(Transaction(animation: nil)) { isExpanded.wrappedValue.toggle() }
-                } label: {
+                Button(action: onToggle) {
                     HStack(spacing: 5) {
                         Text(title)
-                        if let count, count > 0, !isExpanded.wrappedValue { Text("\(count)").monospacedDigit().opacity(0.8) }
+                        if let count, count > 0, !isExpanded { Text("\(count)").monospacedDigit().opacity(0.8) }
                         Image(systemName: "chevron.right").font(.system(size: 9, weight: .bold))
-                            .rotationEffect(.degrees(isExpanded.wrappedValue ? 90 : 0))
-                            .opacity(hovered || !isExpanded.wrappedValue ? 1 : 0)
+                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                            .opacity(hovered || !isExpanded ? 1 : 0)
                         Spacer(minLength: 0)
                     }.frame(maxWidth: .infinity, minHeight: 28, alignment: .leading).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(title)
-                .accessibilityValue(isExpanded.wrappedValue ? "Expanded" : "Collapsed")
-                .accessibilityHint(isExpanded.wrappedValue ? "Fold \(title)" : "Show \(title)")
+                .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+                .accessibilityHint(isExpanded ? "Fold \(title)" : "Show \(title)")
             } else {
                 Text(title)
                 if let count { Text("\(count)").monospacedDigit().opacity(0.8) }
@@ -236,6 +242,14 @@ private struct SidebarSectionHeader<Accessory: View>: View {
     }
 }
 
+private extension SidebarSectionHeader where Accessory == EmptyView {
+    init(title: String, count: Int? = nil, isExpanded: Bool, onToggle: @escaping () -> Void) {
+        self.init(title: title, count: count)
+        self.isExpanded = isExpanded
+        self.onToggle = onToggle
+    }
+}
+
 /// Takes plain values rather than observing the store, so streamed output does not
 /// re-render every folder.
 private struct ProjectFolderRow: View, Equatable {
@@ -244,6 +258,7 @@ private struct ProjectFolderRow: View, Equatable {
     let isExpanded: Bool
     let isActive: Bool
     let runningCount: Int
+    let onToggle: () -> Void
     @State private var hovered = false
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
@@ -252,13 +267,17 @@ private struct ProjectFolderRow: View, Equatable {
 
     var body: some View {
         HStack(spacing: 2) {
-            Button {
-                withTransaction(Transaction(animation: nil)) { store.toggleProjectExpanded(project.id) }
-            } label: {
+            Button(action: onToggle) {
                 HStack(spacing: 8) {
-                    Image(systemName: hovered ? (isExpanded ? "chevron.down" : "chevron.right") : "folder")
-                        .font(.system(size: hovered ? 10 : 13, weight: hovered ? .bold : .regular))
-                        .foregroundStyle(Theme.muted).frame(width: 18)
+                    Group {
+                        if hovered {
+                            Image(systemName: "chevron.right").font(.system(size: 10, weight: .bold))
+                                .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        } else {
+                            Image(systemName: "folder").font(.system(size: 13))
+                        }
+                    }
+                    .foregroundStyle(Theme.muted).frame(width: 18)
                     Text(project.name).font(.system(size: 13, weight: .medium)).lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 4)
                     if !hovered && !isExpanded && runningCount > 0 {

@@ -158,16 +158,15 @@ struct ComposerQueuePanel: View {
     private var paused: Bool { composer.queue.isPaused(conversationID) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            if composer.queuePanelExpanded {
-                Divider().opacity(0.6)
-                // A short queue shows every row; a long one scrolls so the transcript keeps its room.
-                if entries.count + harnessEntries.count <= 4 && editingID == nil {
-                    rows
-                } else {
-                    ScrollView { rows }.frame(height: 216)
-                }
+        Fold(isExpanded: $composer.queuePanelExpanded) { toggle, isOpen in
+            header(toggle: toggle, isOpen: isOpen)
+        } content: {
+            Divider().opacity(0.6)
+            // A short queue shows every row; a long one scrolls so the transcript keeps its room.
+            if entries.count + harnessEntries.count <= 4 && editingID == nil {
+                rows
+            } else {
+                ScrollView { rows }.frame(height: 216)
             }
         }
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 14))
@@ -192,7 +191,7 @@ struct ComposerQueuePanel: View {
         }.padding(6)
     }
 
-    private var header: some View {
+    private func header(toggle: @escaping () -> Void, isOpen: Bool) -> some View {
         HStack(spacing: 8) {
             Image(systemName: "text.line.last.and.arrowtriangle.forward").font(.system(size: 13)).foregroundStyle(Theme.accent)
                 .accessibilityHidden(true)
@@ -208,10 +207,7 @@ struct ComposerQueuePanel: View {
             if !entries.isEmpty {
                 IconButton(icon: "trash", help: "Clear queued prompts", size: 26) { composer.clearQueue(conversationID) }
             }
-            IconButton(icon: composer.queuePanelExpanded ? "chevron.down" : "chevron.up",
-                       help: composer.queuePanelExpanded ? "Collapse queue" : "Expand queue", size: 26) {
-                withTransaction(Transaction(animation: nil)) { composer.queuePanelExpanded.toggle() }
-            }
+            IconButton(icon: isOpen ? "chevron.down" : "chevron.up", help: isOpen ? "Collapse queue" : "Expand queue", size: 26, action: toggle)
         }
         .padding(.leading, 14).padding(.trailing, 8).padding(.vertical, 6)
     }

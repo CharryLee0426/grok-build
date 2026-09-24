@@ -298,8 +298,8 @@ struct ImportClaudeSheet: View {
                     switch press.key {
                     case .upArrow: model.moveFocus(-1)
                     case .downArrow: model.moveFocus(1)
-                    case .leftArrow: model.foldOrParent()
-                    case .rightArrow: model.unfold()
+                    case .leftArrow: FoldMotion.toggle { model.foldOrParent() }
+                    case .rightArrow: FoldMotion.toggle { model.unfold() }
                     case .home: model.focusEdge(last: false)
                     case .end: model.focusEdge(last: true)
                     default: if let focus = model.focus { model.toggle(focus) }
@@ -313,8 +313,8 @@ struct ImportClaudeSheet: View {
                     case "n": model.selectNone()
                     case "j": model.moveFocus(1)
                     case "k": model.moveFocus(-1)
-                    case "h": model.foldOrParent()
-                    case "l": model.unfold()
+                    case "h": FoldMotion.toggle { model.foldOrParent() }
+                    case "l": FoldMotion.toggle { model.unfold() }
                     case "g": model.focusEdge(last: false)
                     default: model.focusEdge(last: true)
                     }
@@ -371,7 +371,7 @@ private struct ClaudeImportRowView: View {
     var body: some View {
         HStack(spacing: 8) {
             if row.isHeader {
-                Button { model.setCollapsed(row, !model.isCollapsed(row)) } label: {
+                Button { FoldMotion.toggle { model.setCollapsed(row, !model.isCollapsed(row)) } } label: {
                     Image(systemName: "chevron.right")
                         .font(.system(size: 10, weight: .semibold)).foregroundStyle(Theme.muted)
                         .rotationEffect(.degrees(model.isCollapsed(row) ? 0 : 90))

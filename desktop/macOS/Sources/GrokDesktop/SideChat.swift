@@ -228,7 +228,7 @@ private struct SideChatBubble: View {
                         NSPasteboard.general.setString(message.text, forType: .string)
                     }
                 }
-                MarkdownContent(text: message.text, style: MarkdownStyle(fontSize: 13.5, blockSpacing: 9))
+                MarkdownReply(text: message.text, style: MarkdownStyle(fontSize: 13.5, blockSpacing: 9))
             }
         case .failure:
             HStack(alignment: .top, spacing: 8) {

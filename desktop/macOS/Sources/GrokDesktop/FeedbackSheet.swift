@@ -286,9 +286,7 @@ struct FeedbackResponse: Equatable {
 enum FeedbackRequests {
     static let sendTimeout: TimeInterval = 30
 
-    static var clientVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0"
-    }
+    static var clientVersion: String { DesktopVersion.current }
 
     static func structuredFeedback(source: String, taxonomy: FeedbackTaxonomySelection) -> [String: Any] {
         var envelope: [String: Any] = ["schema_version": 1, "source": source]

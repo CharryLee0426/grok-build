@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// The same quiet, inset surface is used for search, short answers, and forms.
@@ -111,23 +112,117 @@ struct PopoverRowStyle: ButtonStyle {
     }
 }
 
-/// A collapsible section whose whole header row is the click target.
-/// Expanding and collapsing are not animated: animating the height of long streamed
-/// content forces a relayout on every frame of the animation.
+/// How folds open and close, everywhere: the content is laid out once at its full height and
+/// uncovered from the top by a clip that grows with it, while whatever sits below slides down.
+/// Nothing is laid out again during the animation, so long streamed content folds smoothly too.
+enum FoldMotion {
+    static let animation = Animation.smooth(duration: 0.26)
+
+    /// The fold animation, or none with Reduce Motion.
+    static var current: Animation? { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion ? nil : animation }
+
+    /// Makes a fold's state change animated, or immediate with Reduce Motion.
+    static func toggle(_ change: () -> Void) {
+        withAnimation(current, change)
+    }
+}
+
+/// A header and the content it folds. Closing covers the content in place and removes it only
+/// once covered, so it animates in layout like opening does and what sits below follows it.
+struct Fold<Header: View, Content: View>: View {
+    @Binding var isExpanded: Bool
+    var spacing: CGFloat = 0
+    /// Given the fold's action and whether it shows as open, which it stops doing as it starts to close.
+    @ViewBuilder var header: (_ toggle: @escaping () -> Void, _ isOpen: Bool) -> Header
+    @ViewBuilder var content: () -> Content
+    @State private var closing = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: spacing) {
+            header(toggle, isExpanded && !closing)
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 0) { content() }
+                    .modifier(FoldReveal(progress: closing ? 0 : 1))
+                    .transition(.fold)
+            }
+        }
+    }
+
+    private func toggle() {
+        let animation = FoldMotion.current
+        if closing {
+            withAnimation(animation) { closing = false }
+        } else if !isExpanded {
+            withAnimation(animation) { isExpanded = true }
+        } else if animation == nil {
+            isExpanded = false
+        } else {
+            withAnimation(animation) { closing = true } completion: {
+                // Opened again before it finished closing.
+                guard closing else { return }
+                var quiet = Transaction()
+                quiet.disablesAnimations = true
+                withTransaction(quiet) {
+                    isExpanded = false
+                    closing = false
+                }
+            }
+        }
+    }
+}
+
+extension AnyTransition {
+    /// Folded content: uncovered from the top as it opens, and fading in.
+    static var fold: AnyTransition {
+        .modifier(active: FoldReveal(progress: 0), identity: FoldReveal(progress: 1))
+    }
+}
+
+struct FoldReveal: ViewModifier {
+    var progress: CGFloat
+
+    func body(content: Content) -> some View {
+        RevealLayout(progress: progress) { VStack(alignment: .leading, spacing: 0) { content } }
+            .clipped()
+            .opacity(progress)
+    }
+}
+
+/// Takes the top `progress` of its content's height; the content keeps its full size beneath the clip.
+struct RevealLayout: Layout {
+    var progress: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard let content = subviews.first else { return .zero }
+        let size = content.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil))
+        return CGSize(width: size.width, height: size.height * min(1, max(0, progress)))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard let content = subviews.first else { return }
+        let size = content.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+        content.place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(width: bounds.width, height: size.height))
+    }
+}
+
+/// A collapsible section whose whole header row is the click target. It opens and closes
+/// with `FoldMotion`, the chevron turning as the content unfolds.
 struct FoldableSection<Header: View, Content: View>: View {
     @Binding var isExpanded: Bool
     @ViewBuilder var header: () -> Header
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withTransaction(Transaction(animation: nil)) { isExpanded.toggle() }
-            } label: {
+        Fold(isExpanded: $isExpanded) { toggle, isOpen in
+            Button(action: toggle) {
                 HStack(spacing: 10) {
                     Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.muted)
-                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                        .animation(.easeOut(duration: 0.12), value: isExpanded)
+                        .rotationEffect(.degrees(isOpen ? 90 : 0))
                         .frame(width: 20, height: 20)
                         .accessibilityHidden(true)
                     header()
@@ -137,9 +232,10 @@ struct FoldableSection<Header: View, Content: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(FoldHeaderStyle())
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-            .accessibilityHint(isExpanded ? "Collapse" : "Expand")
-            if isExpanded { content() }
+            .accessibilityValue(isOpen ? "Expanded" : "Collapsed")
+            .accessibilityHint(isOpen ? "Collapse" : "Expand")
+        } content: {
+            content()
         }
     }
 }
