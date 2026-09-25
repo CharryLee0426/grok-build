@@ -28,6 +28,7 @@ enum GrokCommandStatus: Equatable {
 enum GrokCommand {
     static let defaultLink = URL(fileURLWithPath: "/usr/local/bin/grok")
     static let launcherPath = "Contents/Resources/bin/grok"
+    static let testBuildInfoKey = "GrokDesktopTestBuild"
     private static let harnessPath = "Contents/Resources/grok"
 
     /// Runs a shell command as root, after macOS asks for an administrator password with `prompt`.
@@ -41,6 +42,15 @@ enum GrokCommand {
 
     /// The folder holding the launcher, which the terminal panel adds to PATH.
     static var bundledCommandDirectory: String? { launcher()?.deletingLastPathComponent().path }
+
+    static func isWorkspaceTestBuild(in bundle: URL) -> Bool {
+        let info = bundle.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: info),
+              let object = try? PropertyListSerialization.propertyList(from: data, options: [], format: nil),
+              let plist = object as? [String: Any]
+        else { return false }
+        return plist[testBuildInfoKey] as? Bool == true
+    }
 
     static func status(link: URL, launcher: URL?) -> GrokCommandStatus {
         let fileManager = FileManager.default
@@ -58,7 +68,10 @@ enum GrokCommand {
 
     /// Why this copy of the app cannot provide the command, if it cannot. A link into a disk image or a
     /// translocated copy would stop working once that copy goes away.
-    static func unavailableReason(bundle: URL, launcher: URL?) -> String? {
+    static func unavailableReason(bundle: URL, launcher: URL?, workspaceTestBuild: Bool? = nil) -> String? {
+        if workspaceTestBuild ?? isWorkspaceTestBuild(in: bundle) {
+            return "This workspace test build stays out of the global Terminal command path."
+        }
         guard launcher != nil else { return "Available in the packaged app." }
         let readOnly = (try? bundle.resourceValues(forKeys: [.volumeIsReadOnlyKey]))?.volumeIsReadOnly == true
         if readOnly || bundle.path.contains("/AppTranslocation/") {
@@ -170,6 +183,7 @@ final class GrokCommandModel: ObservableObject {
     let link: URL
     let launcher: URL?
     let unavailableReason: String?
+    let isWorkspaceTestBuild: Bool
     private let home: URL
     private let privileged: GrokCommand.PrivilegedRunner
 
@@ -180,12 +194,14 @@ final class GrokCommandModel: ObservableObject {
         self.home = home
         self.privileged = privileged
         launcher = GrokCommand.launcher(in: bundle)
-        unavailableReason = GrokCommand.unavailableReason(bundle: bundle, launcher: launcher)
+        let workspaceTestBuild = GrokCommand.isWorkspaceTestBuild(in: bundle)
+        isWorkspaceTestBuild = workspaceTestBuild
+        unavailableReason = GrokCommand.unavailableReason(bundle: bundle, launcher: launcher, workspaceTestBuild: workspaceTestBuild)
         refresh()
     }
 
     var canToggle: Bool {
-        guard !isWorking else { return false }
+        guard !isWorking, !isWorkspaceTestBuild else { return false }
         if status.isOn { return true }
         if case .taken(_, false) = status { return false }
         return unavailableReason == nil
@@ -199,7 +215,7 @@ final class GrokCommandModel: ObservableObject {
     /// Links the command to this app. Another program's symlink is replaced only with `replacing`.
     func enable(replacing: Bool = false) async {
         refresh()
-        guard let launcher, unavailableReason == nil, !isWorking else { return }
+        guard let launcher, unavailableReason == nil, !isWorking, !isWorkspaceTestBuild else { return }
         switch status {
         case .installed: return
         case .taken(_, let replaceable) where !replaceable || !replacing: return
@@ -210,7 +226,7 @@ final class GrokCommandModel: ObservableObject {
 
     func disable() async {
         refresh()
-        guard status.isOn, !isWorking else { return }
+        guard status.isOn, !isWorking, !isWorkspaceTestBuild else { return }
         await perform { try await GrokCommand.uninstall(link: self.link, privileged: self.privileged) }
     }
 

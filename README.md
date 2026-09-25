@@ -80,6 +80,21 @@ cargo run -p xai-grok-pager-bin              # build + launch the TUI
 cargo check -p xai-grok-pager-bin            # fast validation
 ```
 
+### Workspace test builds
+
+Build a test TUI and launch it with a workspace-only command:
+
+```sh
+make build-test-tui
+PATH="$PWD/bin:$PATH" grok-test
+```
+
+Add `export PATH="$PWD/bin:$PATH"` to the current shell once if you want to type
+`grok-test` directly. The launcher resolves this checkout's build, disables
+self-update, and refuses to run when the current directory is outside the
+workspace. The compiled test TUI stays under `target/test-builds/`; the small
+`bin/grok-test` file is the only repository file added to the command path.
+
 `make`, `make build`, and `make deploy` build only the CLI/TUI and its Rust
 runtime. Desktop compilation and installation require the explicit commands
 below. The direct Cargo equivalent of `make build` is
@@ -109,6 +124,10 @@ Build and package the desktop app explicitly:
 make build-desktop
 open "desktop/macOS/dist/Grok Desktop.app"
 
+# Build the separate orange test app inside this workspace:
+make build-test-desktop
+open "target/test-builds/desktop/Grok Desktop Test.app"
+
 # Or build and install it to ~/Applications:
 make deploy-desktop
 
@@ -123,7 +142,10 @@ for use in any terminal.
 Set `GROK_BINARY=/path/to/grok` to reuse an existing harness and compile only
 the desktop app. `DESKTOP_INSTALL_DIR` overrides the desktop install directory.
 It requires Swift 5.9+ and a macOS 14+ SDK; the desktop package has no external
-Swift dependencies.
+Swift dependencies. The test app uses the `ai.grok.build.desktop.test` bundle
+identifier, a workspace-local state file, an orange icon with a **TESTING**
+banner, and a build script guard that prevents it from changing the global
+`/usr/local/bin/grok` link.
 See the [desktop guide](desktop/macOS/README.md) for installing, development
 builds, shortcuts, executable selection, and local data storage. The app and disk
 image are ad hoc signed, not notarized, and do not include an automatic updater.
