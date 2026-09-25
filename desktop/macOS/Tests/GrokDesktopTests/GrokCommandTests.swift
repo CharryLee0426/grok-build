@@ -126,6 +126,23 @@ final class GrokCommandTests: XCTestCase {
 
     // MARK: Switch
 
+    func testWorkspaceTestBuildCannotChangeTheGlobalCommand() async throws {
+        let app = try makeApp(testBuild: true)
+        let link = root.appendingPathComponent("grok")
+        let launcher = try XCTUnwrap(GrokCommand.launcher(in: app))
+        try relink(link, to: launcher.path)
+        let model = GrokCommandModel(link: link, bundle: app, home: root, privileged: { _, _ in XCTFail("a test build cannot request this") })
+
+        XCTAssertTrue(model.isWorkspaceTestBuild)
+        XCTAssertFalse(model.canToggle)
+        XCTAssertEqual(model.status, .installed)
+        XCTAssertEqual(model.unavailableReason, "This workspace test build stays out of the global Terminal command path.")
+
+        await model.enable()
+        await model.disable()
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), launcher.path)
+    }
+
     func testTurningTheCommandOnAndOffLinksAndUnlinks() async throws {
         let app = try makeApp()
         let link = root.appendingPathComponent("bin/grok")
@@ -262,10 +279,13 @@ final class GrokCommandTests: XCTestCase {
     // MARK: Helpers
 
     /// A packaged app holding the real launcher and a TUI stand-in that reports how it was run.
-    private func makeApp(in folder: URL? = nil) throws -> URL {
+    private func makeApp(in folder: URL? = nil, testBuild: Bool = false) throws -> URL {
         let app = (folder ?? root).appendingPathComponent("Grok Desktop.app", isDirectory: true)
-        let resources = app.appendingPathComponent("Contents/Resources", isDirectory: true)
+        let contents = app.appendingPathComponent("Contents", isDirectory: true)
+        let resources = contents.appendingPathComponent("Resources", isDirectory: true)
         try FileManager.default.createDirectory(at: resources.appendingPathComponent("bin"), withIntermediateDirectories: true)
+        let info = try PropertyListSerialization.data(fromPropertyList: [GrokCommand.testBuildInfoKey: testBuild], format: .xml, options: 0)
+        try info.write(to: contents.appendingPathComponent("Info.plist"))
         let harness = resources.appendingPathComponent("grok")
         let launcher = app.appendingPathComponent(GrokCommand.launcherPath)
         try Data("#!/bin/sh\nfor a in \"$@\"; do echo \"arg:$a\"; done\necho \"autoupdater:${GROK_DISABLE_AUTOUPDATER:-unset}\"\n".utf8).write(to: harness)

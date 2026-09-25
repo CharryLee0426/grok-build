@@ -13,7 +13,7 @@ struct GrokDesktopApp: App {
     init() { ExtrasFeatureModel.restoreSavedTheme() }
 
     var body: some Scene {
-        Window("Grok Desktop", id: "main") {
+        Window(displayName, id: "main") {
             ContentView().desktopEnvironment(store)
                 .preferredColorScheme(appearance == "system" ? nil : appearance == "dark" ? .dark : .light)
                 .onAppear { delegate.store = store; NSApp.setActivationPolicy(.regular); NSApp.activate(ignoringOtherApps: true) }
@@ -31,6 +31,10 @@ struct GrokDesktopApp: App {
         auxiliary(.transcript)
         auxiliary(.gboom)
         auxiliary(.tutorial)
+    }
+
+    private var displayName: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ?? "Grok Desktop"
     }
 
     private func auxiliary(_ window: DesktopWindow) -> some Scene {
@@ -96,7 +100,10 @@ private struct AppCommands: Commands {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     weak var store: AppStore?
     func applicationDidFinishLaunching(_ notification: Notification) {
-        GrokCommand.clearQuarantine()
+        // Workspace test bundles are built locally and never install their launcher.
+        if !GrokCommand.isWorkspaceTestBuild(in: Bundle.main.bundleURL) {
+            GrokCommand.clearQuarantine()
+        }
         // Load the shipped artwork directly so an in-place rebuild cannot leave
         // the running Dock tile displaying an older Icon Services cache entry.
         guard let iconName = Bundle.main.object(forInfoDictionaryKey: "CFBundleIconFile") as? String,

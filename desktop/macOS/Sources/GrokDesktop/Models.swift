@@ -209,6 +209,9 @@ enum DesktopPaths {
         if let path = ProcessInfo.processInfo.environment["GROK_DESKTOP_STATE_FILE"], path.hasPrefix("/") {
             return URL(fileURLWithPath: path)
         }
+        if let path = Bundle.main.object(forInfoDictionaryKey: "GrokDesktopStateFile") as? String, path.hasPrefix("/") {
+            return URL(fileURLWithPath: path)
+        }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Grok Desktop", isDirectory: true).appendingPathComponent("state.json")
     }

@@ -1,0 +1,33 @@
+#!/bin/sh
+# Launch the release TUI built by `make build-test-tui` from this checkout only.
+set -eu
+unset CDPATH
+
+script=$0
+while [ -L "$script" ]; do
+    target=$(readlink "$script")
+    case $target in
+        /*) script=$target ;;
+        *) script=$(dirname "$script")/$target ;;
+    esac
+done
+
+launcher_dir="$(cd "$(dirname "$script")" && pwd -P)"
+workspace_root="$(cd "$launcher_dir/.." && pwd -P)"
+current_dir="$(pwd -P)"
+case "$current_dir" in
+    "$workspace_root"|"$workspace_root"/*) ;;
+    *)
+        printf 'grok-test: this test TUI can run only inside %s\n' "$workspace_root" >&2
+        exit 2
+        ;;
+esac
+
+binary="$workspace_root/target/test-builds/tui/grok-test"
+if [ ! -x "$binary" ]; then
+    printf 'grok-test: test TUI is missing. Run `make build-test-tui` in %s\n' "$workspace_root" >&2
+    exit 127
+fi
+
+export GROK_DISABLE_AUTOUPDATER=1
+exec "$binary" "$@"

@@ -52,6 +52,10 @@ Run these commands from the repository root:
 make build-desktop
 open "desktop/macOS/dist/Grok Desktop.app"
 
+# Build a separate workspace-local test app with orange TESTING artwork:
+make build-test-desktop
+open "target/test-builds/desktop/Grok Desktop Test.app"
+
 # Or build and install it to ~/Applications:
 make deploy-desktop
 
@@ -62,7 +66,11 @@ make dmg-desktop
 The repository default commands (`make`, `make build`, and `make deploy`) only
 build or install the CLI/TUI. They do not compile or install the desktop app.
 Use `make deploy-desktop DESKTOP_INSTALL_DIR=/Applications` to choose a different
-app destination, provided it is writable.
+app destination, provided it is writable. `make build-test-desktop` keeps the
+packaged test app and its state under the repository's `target/test-builds/`
+directory. Its app has a separate bundle identity, state file, orange **TESTING**
+icon, and disabled global `grok` command switch, so it remains separate from the
+production desktop app.
 
 The packaging script embeds the release harness as `Contents/Resources/grok`,
 signs that executable, and then signs the app. It also bundles the `grok` command's
