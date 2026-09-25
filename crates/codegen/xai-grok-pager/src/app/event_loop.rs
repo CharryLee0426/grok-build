@@ -1301,9 +1301,15 @@ pub(crate) async fn run(
             app.sync_billing_surface_to_agents();
         }
     }
+    // `app.voice_config` is loaded further down; read the provider now so OpenRouter voice ignores a remote-only xAI kill switch
+    let voice_provider = launch_effective_config
+        .as_ref()
+        .and_then(|root| root.as_table())
+        .map(|table| xai_grok_voice::VoiceConfig::from_config_table(table, None).provider)
+        .unwrap_or_default();
     let voice_mode_enabled = crate::app::resolve_voice_mode_live(
         remote_settings.as_ref().and_then(|s| s.voice_mode_enabled),
-        app.is_api_key_auth,
+        app.is_api_key_auth || voice_provider == xai_grok_voice::VoiceProvider::OpenRouter,
     );
     if !voice_mode_enabled {
         app.voice_reset();
@@ -1555,6 +1561,21 @@ pub(crate) async fn run(
         app.voice_config.language =
             crate::settings::canonical_voice_stt_language(Some(pref)).to_string();
     }
+    if let Some(provider) = app
+        .current_ui
+        .voice_stt_provider
+        .as_deref()
+        .and_then(xai_grok_voice::VoiceProvider::parse)
+    {
+        app.voice_config.provider = provider;
+    }
+    if let Some(ref model) = app.current_ui.voice_stt_model
+        && !model.trim().is_empty()
+    {
+        app.voice_config.model = xai_grok_voice::canonical_stt_model(Some(model));
+    }
+    // The auth meta above computed the tier gate before the voice provider was known; voice is gated only for xAI
+    app.apply_tier_restrictions();
     crate::app::VOICE_KEYBIND_ENABLED.store(
         app.current_ui.voice_keybind_enabled.unwrap_or(true),
         std::sync::atomic::Ordering::Release,
@@ -1928,7 +1949,10 @@ pub(crate) async fn run(
         }
         if let VoiceState::ColdStart { hold, target } = app.voice_state {
             if app.voice_cmd_tx.is_none() && app.voice_can_start_pipeline() {
-                let voice_auth = crate::voice::build_voice_auth(voice_auth_factory.clone());
+                let voice_auth = crate::voice::build_voice_auth(
+                    voice_auth_factory.clone(),
+                    app.voice_config.provider,
+                );
                 let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel(32);
                 let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
                 let voice_config = app.voice_config.clone();

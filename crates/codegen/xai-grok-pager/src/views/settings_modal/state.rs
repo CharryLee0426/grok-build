@@ -854,7 +854,11 @@ pub(super) fn setting_row_visible(
     if !voice_mode
         && matches!(
             meta.key,
-            "voice_keybind_enabled" | "voice_capture_mode" | "voice_stt_language"
+            "voice_keybind_enabled"
+                | "voice_capture_mode"
+                | "voice_stt_language"
+                | "voice_stt_provider"
+                | "voice_stt_model"
         )
     {
         return false;
@@ -1006,6 +1010,7 @@ pub(super) fn action_for_enum_commit(key: SettingKey, choice: &'static str) -> O
         "screen_mode" => Some(Action::SetScreenMode(choice.to_string())),
         "voice_capture_mode" => Some(Action::SetVoiceCaptureMode(choice.to_string())),
         "voice_stt_language" => Some(Action::SetVoiceSttLanguage(choice.to_string())),
+        "voice_stt_provider" => Some(Action::SetVoiceSttProvider(choice.to_string())),
         "render_mermaid" => {
             crate::appearance::RenderMermaid::from_canonical(choice).map(Action::SetRenderMermaid)
         }
@@ -1051,6 +1056,7 @@ pub(super) fn action_for_string(
                     .map(Action::SetForkSecondaryModel)
             }
         }
+        "voice_stt_model" => Some(Action::SetVoiceSttModel(value)),
 
         _ => {
             let _ = value;

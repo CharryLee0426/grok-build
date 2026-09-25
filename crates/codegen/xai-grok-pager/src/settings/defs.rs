@@ -5,6 +5,7 @@
 
 use super::registry::{
     DynamicEnumSource, EnumChoice, SettingCategory, SettingKind, SettingMeta, SettingOwner,
+    StringValidator,
 };
 use crate::appearance::ScrollMode;
 use crate::appearance::TextSelection;
@@ -279,6 +280,20 @@ const VOICE_CAPTURE_MODE_CHOICES: &[EnumChoice] = &[
         canonical: "hold",
         display: "Hold to talk",
         description: "Hold Ctrl+Space / F8 to record, release to stop. Needs a Kitty-protocol terminal.",
+    },
+];
+
+// Voice STT provider choices. Canonicals match `xai_grok_voice::VoiceProvider::as_str`.
+const VOICE_STT_PROVIDER_CHOICES: &[EnumChoice] = &[
+    EnumChoice {
+        canonical: "openrouter",
+        display: "OpenRouter",
+        description: "OpenRouter transcription models (Voice model), billed to your OpenRouter key.",
+    },
+    EnumChoice {
+        canonical: "xai",
+        display: "xAI (Grok STT)",
+        description: "Streaming Grok speech-to-text; needs an xAI login or XAI_API_KEY.",
     },
 ];
 
@@ -1450,6 +1465,60 @@ pub fn default_settings() -> Vec<SettingMeta> {
                 default: "en",
                 choices: VOICE_STT_LANGUAGE_CHOICES,
                 supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        // SHELL-owned, persisted to `[ui].voice_stt_provider` (shared with Grok Desktop). Applied to the next capture.
+        SettingMeta {
+            key: "voice_stt_provider",
+            category: SettingCategory::Editor,
+            owner: SettingOwner::Shell,
+            label: "Voice provider",
+            description: "Speech-to-text service for voice dictation. OpenRouter uses \
+                          your OpenRouter key (`grok login openrouter`) and the Voice \
+                          model below; xAI uses Grok STT with an xAI login.",
+            keywords: &[
+                "voice",
+                "provider",
+                "openrouter",
+                "xai",
+                "dictation",
+                "stt",
+                "speech",
+                "transcribe",
+            ],
+            kind: SettingKind::Enum {
+                default: "openrouter",
+                choices: VOICE_STT_PROVIDER_CHOICES,
+                supports_preview: false,
+            },
+            restart_required: false,
+            hidden_in_minimal: false,
+        },
+        // SHELL-owned, persisted to `[ui].voice_stt_model` (shared with Grok Desktop). Applied to the next capture.
+        SettingMeta {
+            key: "voice_stt_model",
+            category: SettingCategory::Editor,
+            owner: SettingOwner::Shell,
+            label: "Voice model",
+            description: "OpenRouter transcription model for voice dictation, e.g. \
+                          openai/gpt-4o-mini-transcribe, openai/whisper-large-v3-turbo, \
+                          mistralai/voxtral-mini-transcribe. See openrouter.ai/models \
+                          filtered by transcription.",
+            keywords: &[
+                "voice",
+                "model",
+                "openrouter",
+                "whisper",
+                "transcribe",
+                "transcription",
+                "dictation",
+                "stt",
+            ],
+            kind: SettingKind::String {
+                default: xai_grok_voice::DEFAULT_OPENROUTER_STT_MODEL,
+                validator: StringValidator::NonEmptyToken,
             },
             restart_required: false,
             hidden_in_minimal: false,

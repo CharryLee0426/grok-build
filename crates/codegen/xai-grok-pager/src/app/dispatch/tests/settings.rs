@@ -1821,6 +1821,12 @@ fn move_setting_away_from_default(app: &mut AppView, key: crate::settings::Setti
         "voice_stt_language" => {
             let _ = dispatch(Action::SetVoiceSttLanguage("es".to_string()), app);
         }
+        "voice_stt_provider" => {
+            let _ = dispatch(Action::SetVoiceSttProvider("xai".to_string()), app);
+        }
+        "voice_stt_model" => {
+            let _ = dispatch(Action::SetVoiceSttModel("openai/whisper-1".to_string()), app);
+        }
         "fork_secondary_model" => {
             use agent_client_protocol as acp;
             use std::sync::Arc;

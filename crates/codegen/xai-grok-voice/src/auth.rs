@@ -22,6 +22,10 @@ pub enum VoiceAuthError {
     ForeignSession,
     #[error("not signed in — run `grok login`, set XAI_API_KEY, or set a model api_key/env_key")]
     NotSignedIn,
+    #[error(
+        "voice uses OpenRouter transcription: run `grok login openrouter` or set OPENROUTER_API_KEY (or switch Voice provider to xAI in /settings)"
+    )]
+    OpenRouterNotSignedIn,
 }
 
 pub trait VoiceAuthProvider: std::fmt::Debug + Send + Sync + 'static {
