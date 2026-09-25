@@ -43,7 +43,8 @@ jobs:
           test -f desktop/macOS/dist/Grok-Desktop-1.0.0-arm64.dmg
           hdiutil verify desktop/macOS/dist/Grok-Desktop-1.0.0-arm64.dmg
           codesign --verify --deep --strict "desktop/macOS/dist/Grok Desktop.app"
-          nm -m "desktop/macOS/dist/Grok Desktop.app/Contents/MacOS/GrokDesktop" | grep -q 'glassEffect'
+          nm -m "desktop/macOS/dist/Grok Desktop.app/Contents/MacOS/GrokDesktop" > "$RUNNER_TEMP/GrokDesktop.symbols"
+          grep -q 'glassEffect' "$RUNNER_TEMP/GrokDesktop.symbols"
 
       - name: Upload DMG to the v1.0 release
         env:
