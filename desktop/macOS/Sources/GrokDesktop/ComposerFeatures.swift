@@ -23,6 +23,8 @@ final class ComposerFeatureModel: ObservableObject {
     @Published private(set) var followUpBehavior: ComposerFollowUpBehavior = .queue
     @Published private(set) var voiceShortcutEnabled = true
     @Published private(set) var voiceLanguage = "en"
+    @Published private(set) var voiceProvider: VoiceSTTProvider = .openRouter
+    @Published private(set) var voiceModel = VoiceSTTSettings.defaultModel
 
     let voice = VoiceDictationController()
     /// The composer's text view, so dictation lands at the cursor.
@@ -563,6 +565,9 @@ final class ComposerFeatureModel: ObservableObject {
         followUpBehavior = config.string("follow_up_behavior", in: "ui").flatMap(ComposerFollowUpBehavior.init(rawValue:)) ?? .queue
         voiceShortcutEnabled = config.bool("voice_keybind_enabled", in: "ui") ?? true
         voiceLanguage = VoiceSTTSettings.canonicalLanguage(config.string("voice_stt_language", in: "ui") ?? config.string("language", in: "voice"))
+        let voiceSettings = VoiceSTTSettings(config: config)
+        voiceProvider = voiceSettings.provider
+        voiceModel = voiceSettings.model
         updateAutoGate()
     }
 
@@ -579,6 +584,24 @@ final class ComposerFeatureModel: ObservableObject {
     func setVoiceLanguage(_ code: String) {
         voiceLanguage = VoiceSTTSettings.canonicalLanguage(code)
         persist("voice_stt_language", .string(voiceLanguage))
+    }
+
+    func setVoiceProvider(_ provider: VoiceSTTProvider) {
+        guard provider != voiceProvider else { return }
+        voiceProvider = provider
+        persist("voice_stt_provider", .string(provider.rawValue))
+    }
+
+    /// Any OpenRouter transcription model slug; blank restores the default.
+    func setVoiceModel(_ model: String) {
+        let model = VoiceSTTSettings.canonicalModel(model)
+        guard !model.contains(where: \.isWhitespace) else {
+            store?.banner = "The dictation model must be an OpenRouter model ID such as openai/whisper-1."
+            return
+        }
+        guard model != voiceModel else { return }
+        voiceModel = model
+        persist("voice_stt_model", .string(model))
     }
 
     private func persist(_ key: String, _ value: GrokConfigValue) {
@@ -639,6 +662,22 @@ final class ComposerFeatureModel: ObservableObject {
             return
         }
         let settings = VoiceSTTSettings(config: configURL.map { GrokConfig(url: $0) } ?? GrokConfig(text: ""))
+        if settings.provider == .openRouter {
+            let key = await Task.detached(priority: .userInitiated) { VoiceOpenRouterCredential.read() }.value
+            guard stillStarting() else { return }
+            if !store.harnessMeta.initialize.isEmpty && !store.harnessMeta.voiceMode {
+                voice.cancel()
+                store.banner = "Voice input is turned off for this account."
+                return
+            }
+            guard let key else {
+                voice.cancel()
+                store.banner = "Voice: dictation uses OpenRouter transcription. Sign in to OpenRouter in Settings (or set OPENROUTER_API_KEY), or switch the dictation service to xAI in Settings › Behavior."
+                return
+            }
+            voice.startOpenRouter(key: key, settings: settings)
+            return
+        }
         let credential = await voiceCredential()
         guard stillStarting() else { return }
         if !store.harnessMeta.initialize.isEmpty && !store.harnessMeta.voiceMode {

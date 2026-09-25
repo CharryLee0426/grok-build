@@ -178,7 +178,9 @@ struct ComposerView: View {
     }
     private var slashCommands: [SlashCommand] { DesktopCommands.matches(store.availableCommands, query: store.draft) }
     private func submitDraft() {
-        // Return while dictating keeps the words heard so far, stops, and sends.
+        // Return while dictating keeps the words heard so far, stops, and sends. With OpenRouter the last
+        // words are transcribed after the stop, so Return only stops; the next Return sends.
+        if features.voice.finalArrivesAfterStop { features.stopVoice(); return }
         if features.voice.isActive { features.finishVoiceForSubmit() }
         if showSlashCommands && slashCommands.indices.contains(selectedCommand) { chooseCommand(slashCommands[selectedCommand]) }
         else if let command = SlashCommand.split(store.draft), command.name == "btw" || (command.name == "goal" && ["status", "pause", "resume", "clear"].contains(command.arguments)) {
