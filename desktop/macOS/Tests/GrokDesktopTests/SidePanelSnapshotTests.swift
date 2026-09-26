@@ -69,9 +69,13 @@ final class SidePanelSnapshotTests: XCTestCase {
         files.showsDiff = false
         settle()
         store.sidePanelTab = .files
+        // A previewed file opens beside the tree, in a wider panel.
+        let previewSize = CGSize(width: SidePanelView.defaultPreviewWidth, height: 720)
+        try write(SidePanelView(containerWidth: 1400).desktopEnvironment(store).frame(width: previewSize.width, height: 720).foregroundStyle(Theme.ink),
+                  "side-panel-files", size: previewSize)
         let size = CGSize(width: 400, height: 720)
-        try write(SidePanelView(containerWidth: 1200).desktopEnvironment(store).frame(width: 400, height: 720).foregroundStyle(Theme.ink), "side-panel-files", size: size)
         files.select(nil)
+        try write(SidePanelView(containerWidth: 1200).desktopEnvironment(store).frame(width: 400, height: 720).foregroundStyle(Theme.ink), "side-panel-tree", size: size)
         files.scope = .changes
         try write(SidePanelView(containerWidth: 1200).desktopEnvironment(store).frame(width: 400, height: 720).foregroundStyle(Theme.ink), "side-panel-changes", size: size)
         store.sidePanelTab = .sideChat

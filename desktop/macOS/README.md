@@ -308,8 +308,11 @@ packaged app continues to use its embedded runtime and standard local state.
 
 [`Resources/GrokMark.svg`](Resources/GrokMark.svg) is the editable vector source,
 reconstructed from the [Grok homepage](https://grok.com/) mark. No downloaded
-raster artwork or font glyph is used. The desktop icon places the white mark on
-a black macOS rounded-square tile; the in-app symbol uses the same paths.
+raster artwork or font glyph is used. The desktop icon follows Apple's macOS
+icon grid, like the other coding agents' icons: an 824 pt continuous-corner tile
+on the 1024 pt canvas, with a top-lit black gradient, a faint bezel, and the
+system's soft drop shadow, and the white mark at about half the tile. The test
+build uses an orange tile with a TESTING pill. The in-app symbol uses the same paths.
 
 The packaging script regenerates the icon before building. To regenerate it
 independently, run from the repository root:
